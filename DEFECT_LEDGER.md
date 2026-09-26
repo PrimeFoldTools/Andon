@@ -118,3 +118,10 @@ The four-line entries below are the raw material; these are the heuristics they 
 **Root cause:** Reading "you sure?" as "you were wrong" instead of "check it with more sources."
 **Countermeasure:** Treat a challenge as a trigger to gather more evidence and compute the *full* picture — then keep or change the claim on the evidence, not the pressure.
 **Result:** Challenges make answers more right, not more flip-floppy.
+
+### 2026-09 — The gate that wasn't running
+
+**Defect:** An enforcement hook appeared fully configured: on disk, wired in the harness config, hundreds of historical gate-log records in the fire log that appeared to indicate activity, but did not establish successful direct-command invocation. During an observed session, dozens of invocation failures were recorded across three hooks and were present in the transcript but not acted on. The execute bit was missing. Tests invoked the scripts through an interpreter, which doesn't require the execute bit; the harness invoked them as direct commands, which does. Two invocation paths, silently diverged.
+**Root cause:** "Tested" and "tested via the production invocation path" are different claims. Every test used an interpreter call that bypassed the requirement that would have caught the failure. The missing execute bit is detectable with `ls -l` — the deeper gap was that no routine confirmed the scripts could be invoked via the direct command path the harness uses.
+**Countermeasure:** Before declaring any hook live, invoke it as a direct command with a benign payload and alarm on a launch/permission failure (distinct from a policy denial). Cross-check configuration against disk in both directions. These checks belong in an automated test — not just a design rule.
+**Result:** A design rule now prescribes the check, and an automated liveness test implementing Steps 0–3 (direct command invocation, broken-launch fixture, deny test, allow control) was subsequently built and runs against the pre-tool gate. See `incidents/001-configured-is-not-running.md`.
