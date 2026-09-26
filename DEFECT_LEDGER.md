@@ -98,20 +98,6 @@ The four-line entries below are the raw material; these are the heuristics they 
 **Countermeasure:** Search-before-building, every time: grep the code, check memory, look for an existing tool. A 30-second search beats three sessions of duplicate-bug cleanup.
 **Result:** Less duplication, fewer subtly-divergent twins.
 
-### 2026-09 — Tightened for precision, lost the recall — then overshot fixing it
-
-**Defect:** The claim detector caught 4 of 13 ordinary done-claims. `Implemented the migration.` fired; `I've implemented the migration.` — how agents actually write — did not. `Task complete!` and `The fix is in place.` passed unseen. Reported with a repro in issue #3.
-**Root cause:** Every false-positive fix had narrowed the patterns and nothing measured what the narrowing cost. Both sentence-start patterns were anchored so any leading subject defeated them.
-**Countermeasure:** Additions that stand on their own — a first-person lead-in (the determiner rule protecting `Fixed income securities…` untouched), the missing standalone verbs, a subject-noun closure form, and state verbs each carrying their own guard. Every accumulated example is a checked-in corpus, and the test that matters asserts the patch is *additive*: nothing the previous detector caught may stop being caught.
-**Result:** 11 of 13 on the reported set, 0 new false fires, 0 regressions. The two still missed are result-claims (`the tests pass`, `CI is green`), left deliberately — see the entry below, which is why.
-
-### 2026-09 — The fix that kept breaking what it was fixing
-
-**Defect:** Catching result-claims (`the tests pass`) needs the detector to know when a clause *asserts* something, so exemptions were added for negation, attribution and conditionals. Each round of review found claims those exemptions had silently suppressed: four, then two, then one. Each fix was correct and produced the next one.
-**Root cause:** Recall was being bought with exemptions, and an exemption is a blanket — it cannot see which claims it covers. Every new one widened the blast radius, so the defect rate per fix stayed roughly constant instead of falling. The reviews were catching instances; nobody was counting the class.
-**Countermeasure:** Drop the feature that needed the exemptions rather than keep tuning them, and replace instance-checking with a property: a corpus-wide test that the patch only ever adds detections. Mutation-checked — reintroduce a broad exemption and it fails.
-**Result:** Result-claims stay undetected, which is a real loss stated plainly rather than a target met. In exchange the regression class is gone by construction, not by vigilance. *An exemption that can suppress a claim you cannot enumerate is a liability priced as a feature.*
-
 ### 2026-06 — Reversed a right answer when pushed
 
 **Defect:** Challenged with "you sure?", the agent retracted a *correct* claim after eyeballing partial evidence — overcorrecting into a new error.
@@ -125,3 +111,17 @@ The four-line entries below are the raw material; these are the heuristics they 
 **Root cause:** "Tested" and "tested via the production invocation path" are different claims. Every test used an interpreter call that bypassed the requirement that would have caught the failure. The missing execute bit is detectable with `ls -l` — the deeper gap was that no routine confirmed the scripts could be invoked via the direct command path the harness uses.
 **Countermeasure:** Before declaring any hook live, invoke it as a direct command with a benign payload and alarm on a launch/permission failure (distinct from a policy denial). Cross-check configuration against disk in both directions. These checks belong in an automated test — not just a design rule.
 **Result:** A design rule now prescribes the check, and an automated liveness test implementing Steps 0–3 (direct command invocation, broken-launch fixture, deny test, allow control) was subsequently built and runs against the pre-tool gate. See `incidents/001-configured-is-not-running.md`.
+
+### 2026-09 — Tightened for precision, lost the recall — then overshot fixing it
+
+**Defect:** The claim detector caught 4 of 13 ordinary done-claims. `Implemented the migration.` fired; `I've implemented the migration.` — how agents actually write — did not. `Task complete!` and `The fix is in place.` passed unseen. Reported with a repro in issue #3.
+**Root cause:** Every false-positive fix had narrowed the patterns and nothing measured what the narrowing cost. Both sentence-start patterns were anchored so any leading subject defeated them.
+**Countermeasure:** Additions that stand on their own — a first-person lead-in (the determiner rule protecting `Fixed income securities…` untouched), the missing standalone verbs, a subject-noun closure form, and state verbs each carrying their own guard. Every accumulated example is a checked-in corpus, and the test that matters asserts the patch is *additive*: nothing the previous detector caught may stop being caught.
+**Result:** 11 of 13 on the reported set, 0 new false fires, 0 regressions. The two still missed are result-claims (`the tests pass`, `CI is green`), left deliberately — see the entry below, which is why.
+
+### 2026-09 — The fix that kept breaking what it was fixing
+
+**Defect:** Catching result-claims (`the tests pass`) needs the detector to know when a clause *asserts* something, so exemptions were added for negation, attribution and conditionals. Each round of review found claims those exemptions had silently suppressed: four, then two, then one. Each fix was correct and produced the next one.
+**Root cause:** Recall was being bought with exemptions, and an exemption is a blanket — it cannot see which claims it covers. Every new one widened the blast radius, so the defect rate per fix stayed roughly constant instead of falling. The reviews were catching instances; nobody was counting the class.
+**Countermeasure:** Drop the feature that needed the exemptions rather than keep tuning them, and replace instance-checking with a property: a corpus-wide test that the patch only ever adds detections. Mutation-checked — reintroduce a broad exemption and it fails.
+**Result:** Result-claims stay undetected, which is a real loss stated plainly rather than a target met. In exchange the regression class is gone by construction, not by vigilance. *An exemption that can suppress a claim you cannot enumerate is a liability priced as a feature.*
