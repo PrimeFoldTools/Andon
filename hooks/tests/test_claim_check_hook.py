@@ -434,6 +434,84 @@ def test_handwritten_legacy_line_cannot_downgrade_migrated_log(tmp_path):
     assert out.get("decision") == "block"
 
 
+# ---- exemptions must survive fragment attribution (spans, not per-fragment re-match) ----
+def test_fenced_evidence_does_not_mint_phantom_claim(tmp_path):
+    # Regression: pasting your own verification evidence in a code fence must not create
+    # a phantom claim. "done: true" inside a fence is backtick-exempt at message level;
+    # a per-fragment re-match would see it at ^ with no fence markers and false-block.
+    logp = _log_path(tmp_path)
+    _log_claim(logp, "sess-A", "migration applied", "ran alembic")
+    msg = "The migration is complete.\n```\ndone: true\n```"
+    out = _run({"transcript_path": _session_transcript(tmp_path, msg, "sess-A")},
+               {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": logp})
+    assert out["continue"] is True and "decision" not in out
+
+
+def test_fenced_log_output_does_not_mint_phantom_claim(tmp_path):
+    logp = _log_path(tmp_path)
+    _log_claim(logp, "sess-A", "migration applied", "ran alembic")
+    msg = "The migration is complete.\n\nLog output:\n```\nINFO: setup is complete\n```"
+    out = _run({"transcript_path": _session_transcript(tmp_path, msg, "sess-A")},
+               {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": logp})
+    assert out["continue"] is True and "decision" not in out
+
+
+def test_quote_spanning_sentence_boundary_stays_exempt(tmp_path):
+    # A quotation containing a sentence break must keep its exemption: the split lands
+    # inside the quote, and a per-fragment re-match would see an unpaired quote fragment.
+    logp = _log_path(tmp_path)
+    _log_claim(logp, "sess-A", "migration applied", "ran alembic")
+    msg = ('The migration is complete. Filler sentence to separate things here. '
+           'He said "the migration is done. Proceed when possible" yesterday.')
+    out = _run({"transcript_path": _session_transcript(tmp_path, msg, "sess-A")},
+               {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": logp})
+    assert out["continue"] is True and "decision" not in out
+
+
+def test_done_then_question_still_gates(tmp_path):
+    # "Done. Anything else?" — the completed assertion must gate; the FOLLOWING question
+    # must not exempt it (the question guard is for the claim's own sentence only).
+    for text in ("Done. Anything else?", "All set. Should I push?"):
+        out = _run({"transcript_path": _session_transcript(tmp_path, text, "sess-A")},
+                   {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": _log_path(tmp_path)})
+        assert out.get("decision") == "block", text
+
+
+def test_nearby_quote_does_not_silence_real_claim(tmp_path):
+    # An exemption match must OVERLAP the claim, not merely co-occur in the ±80 window:
+    # a quoted "done is done" in the NEXT sentence must not silence the real claim.
+    out = _run({"transcript_path": _session_transcript(
+                    tmp_path, 'The migration is complete. As they say, "done is done".', "sess-A")},
+               {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": _log_path(tmp_path)})
+    assert out.get("decision") == "block"
+
+
+def test_hard_wrapped_claims_bind_separately(tmp_path):
+    # A match spanning a line-wrap ("is\ncomplete") binds the union of the fragments it
+    # touches — so each hard-wrapped claim keeps its own subject and one entry cannot
+    # clear both.
+    logp = _log_path(tmp_path)
+    _log_claim(logp, "sess-A", "migration applied", "ran alembic")  # migration only
+    msg = "The migration is\ncomplete. The endpoint is\nshipped."
+    out = _run({"transcript_path": _session_transcript(tmp_path, msg, "sess-A")},
+               {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": logp})
+    assert out.get("decision") == "block"
+
+
+def test_fingerprint_string_in_value_does_not_deny_legacy_failopen(tmp_path):
+    # Migration is detected by the actual KEY, not a substring: a legacy-only log whose
+    # entry VALUE mentions "claim_fingerprint" is still un-migrated → fail-open holds.
+    logp = tmp_path / "log.jsonl"
+    fresh = datetime.now(timezone.utc).isoformat()
+    logp.write_text(json.dumps({
+        "timestamp": fresh, "claim": "added claim_fingerprint field to the schema",
+        "verification": "reviewed it",
+    }) + "\n")
+    out = _run({"transcript_path": _session_transcript(tmp_path, "The migration is complete.", "sess-A")},
+               {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": str(logp)})
+    assert out["continue"] is True and "decision" not in out
+
+
 def test_repeated_phrase_across_sentences_binds_separately(tmp_path):
     # Audit finding: the SAME closure phrase in two sentences with different subjects
     # must be bound per-sentence — verifying one must not launder the other.

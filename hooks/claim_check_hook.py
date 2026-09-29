@@ -41,6 +41,10 @@ KNOWN LIMITS (binding is a forcing function, not a cryptographic guarantee):
   - log_claim.py records the session from CLAUDE_CODE_SESSION_ID (set by Claude Code). Under
     a harness that does not set it, entries are session-less and cannot clear a session-bound
     claim — the verification must run in the same session that makes the claim.
+  - "**DONE** Want me to deploy?" (a bold marker followed by a question on the same line) is
+    exempted as a question — genuinely ambiguous; terminator-ended closures ("Done. Anything
+    else?") are treated as completed assertions and DO gate. Plain bullet closers
+    ("- Fixed the auth bug.") are a known detector-recall gap, tracked with issue #3.
 
 CUSTOMIZE
   - COMPLETION_VERBS — closure verbs that trigger the check (kept tight to avoid false-fires).
@@ -227,26 +231,47 @@ def _ends_in_question(text, m_end):
     return False
 
 
-def find_claims(text):
-    matches = []
-    seen = set()
+# A phrase that already ends with an assertion terminator ("Done.", "All set:") is a
+# COMPLETED assertion — a question in the NEXT sentence ("Done. Anything else?") must
+# not exempt it. The question guard is for the claim's own sentence only.
+_ASSERTED_END = tuple(".!:;—-")
+
+
+def _iter_claim_matches(text):
+    """Yield (phrase, start, end) for every NON-exempt claim match, with all exemptions
+    evaluated ONCE against the full message. Binding must reuse these spans rather than
+    re-running the matcher on isolated fragments — a fence or quotation that spans a
+    fragment boundary loses its markers in isolation, which re-litigates the exemption
+    with less context and mints phantom claims out of pasted evidence."""
     for pat in CLAIM_PATTERNS:
         for m in pat.finditer(text):
             phrase = m.group(0).strip()
-            key = phrase.lower()
-            if key in seen:
-                continue
-            if _ends_in_question(text, m.end()):
+            if not phrase.endswith(_ASSERTED_END) and _ends_in_question(text, m.end()):
                 continue
             if _is_backtick_wrapped(text, m.start(), m.end()):
                 continue
             if _is_blockquote_line(text, m.start()):
                 continue
-            ctx = text[max(0, m.start() - 80):min(len(text), m.end() + 80)]
-            if any(ex.search(ctx) for ex in EXEMPT_CONTEXT):
+            ctx_start = max(0, m.start() - 80)
+            ctx = text[ctx_start:min(len(text), m.end() + 80)]
+            c0, c1 = m.start() - ctx_start, m.end() - ctx_start
+            # An exemption counts only if its match OVERLAPS the claim — a quotation
+            # merely NEAR the claim ("As they say, \"done is done\".") must not silence it.
+            if any(exm.start() < c1 and exm.end() > c0
+                   for ex in EXEMPT_CONTEXT for exm in ex.finditer(ctx)):
                 continue
-            seen.add(key)
-            matches.append(phrase)
+            yield phrase, m.start(), m.end()
+
+
+def find_claims(text):
+    matches = []
+    seen = set()
+    for phrase, _s, _e in _iter_claim_matches(text):
+        key = phrase.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        matches.append(phrase)
     return matches[:5]
 
 
@@ -281,28 +306,45 @@ def _content_tokens(text):
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n")
 
 
+def _fragment_spans(text):
+    """(start, end) spans of the sentence fragments _SENTENCE_SPLIT produces."""
+    spans, start = [], 0
+    for m in _SENTENCE_SPLIT.finditer(text):
+        if m.start() > start:
+            spans.append((start, m.start()))
+        start = m.end()
+    if start < len(text):
+        spans.append((start, len(text)))
+    return spans
+
+
 def _claim_token_sets(message):
-    """One token set PER claim-bearing SENTENCE (the matched phrase is usually just the
-    closure verb; the subject — "migration" — lives in the sentence). Giving each
-    claim-bearing sentence its own set means two same-phrased claims in DIFFERENT
-    sentences ("The docs are complete. The migration is complete.") are bound
-    separately — verifying one cannot launder the other. Splitting on punctuation +
-    whitespace keeps dotted identifiers ("migration.py") whole.
+    """One token set PER claim OCCURRENCE, attributed to the sentence fragment(s) its
+    match span touches (the matched phrase is usually just the closure verb; the
+    subject — "migration" — lives in the sentence). Per-occurrence attribution means
+    two same-phrased claims in DIFFERENT sentences ("The docs are complete. The
+    migration is complete.") are bound separately — verifying one cannot launder the
+    other. Splitting on punctuation + whitespace keeps dotted identifiers
+    ("migration.py") whole.
 
-    Each candidate sentence is re-checked through find_claims(), so a sentence exempted
-    at the message level (a question, backtick- or blockquote-wrapped) is NOT treated as
-    a claim here — otherwise "The migration is complete? The config is complete." would
-    wrongly demand verification of the questioned migration.
+    Exemptions were already evaluated ONCE on the full message in _iter_claim_matches —
+    the spans arriving here are real claims. (Re-running the matcher per fragment would
+    re-litigate exemptions with less context: a fence or quotation spanning a boundary
+    loses its markers and pasted evidence becomes a phantom claim.) A match that spans a
+    fragment boundary (a hard-wrapped "is\\ncomplete") binds the union of the fragments
+    it touches, so each hard-wrapped claim keeps its own subject.
 
-    A claim-bearing sentence with no content tokens (a bare "Done.") falls back to the
+    A claim whose fragment has no content tokens (a bare "Done.") falls back to the
     whole message, so "I refactored the parser. Done." still binds on "parser". A truly
     subjectless message yields an empty set — see has_fresh_log for that (unbindable) case."""
     msg_tokens = _content_tokens(message)
+    frags = _fragment_spans(message)
     sets = []
-    for sentence in _SENTENCE_SPLIT.split(message):
-        if find_claims(sentence):  # a real, non-exempted claim in THIS sentence
-            sets.append(_content_tokens(sentence) or msg_tokens)
-    if not sets:  # claim straddled a split boundary — fall back rather than pass free
+    for _phrase, s, e in _iter_claim_matches(message):
+        parts = [message[fs:fe] for fs, fe in frags if fs < e and fe > s]
+        toks = _content_tokens(" ".join(parts))
+        sets.append(toks or msg_tokens)
+    if not sets:  # gate saw a claim but spans vanished (shouldn't happen) — fail closed-ish
         sets.append(msg_tokens)
     return sets
 
@@ -333,7 +375,16 @@ def has_fresh_log(claim_token_sets, session_id, window_min=CLAIM_CHECK_FRESH_MIN
     # Migration status is determined over the WHOLE file, independent of freshness or the
     # tail window: once the log has ANY binding-schema entry, legacy fail-open is off for
     # good (a stale new-schema entry + a fresh hand-written legacy line must NOT revert it).
-    have_new_schema = any("claim_fingerprint" in ln for ln in lines)
+    # Parse each line and test the actual KEY — a raw substring check would count the
+    # literal text "claim_fingerprint" inside a claim/verification VALUE as migration,
+    # wrongly denying a genuinely un-migrated log its fail-open.
+    def _has_binding_key(ln):
+        try:
+            d = json.loads(ln)
+            return isinstance(d, dict) and "claim_fingerprint" in d
+        except (json.JSONDecodeError, ValueError):
+            return False
+    have_new_schema = any(_has_binding_key(ln) for ln in lines)
     fresh_entry_tokens = []   # same-session, new-schema, fresh entries
     legacy_fresh = False
     for line in reversed(lines[-200:]):
