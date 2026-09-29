@@ -281,7 +281,7 @@ def _content_tokens(text):
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n")
 
 
-def _claim_token_sets(message, claim_phrases):
+def _claim_token_sets(message):
     """One token set PER claim-bearing SENTENCE (the matched phrase is usually just the
     closure verb; the subject — "migration" — lives in the sentence). Giving each
     claim-bearing sentence its own set means two same-phrased claims in DIFFERENT
@@ -289,16 +289,20 @@ def _claim_token_sets(message, claim_phrases):
     separately — verifying one cannot launder the other. Splitting on punctuation +
     whitespace keeps dotted identifiers ("migration.py") whole.
 
+    Each candidate sentence is re-checked through find_claims(), so a sentence exempted
+    at the message level (a question, backtick- or blockquote-wrapped) is NOT treated as
+    a claim here — otherwise "The migration is complete? The config is complete." would
+    wrongly demand verification of the questioned migration.
+
     A claim-bearing sentence with no content tokens (a bare "Done.") falls back to the
     whole message, so "I refactored the parser. Done." still binds on "parser". A truly
     subjectless message yields an empty set — see has_fresh_log for that (unbindable) case."""
     msg_tokens = _content_tokens(message)
-    low_phrases = [p.lower() for p in claim_phrases]
     sets = []
     for sentence in _SENTENCE_SPLIT.split(message):
-        if any(p in sentence.lower() for p in low_phrases):
+        if find_claims(sentence):  # a real, non-exempted claim in THIS sentence
             sets.append(_content_tokens(sentence) or msg_tokens)
-    if not sets:  # a phrase straddled a split boundary — fall back rather than pass free
+    if not sets:  # claim straddled a split boundary — fall back rather than pass free
         sets.append(msg_tokens)
     return sets
 
@@ -395,7 +399,7 @@ def main():
     # Prefer the session id the harness passes on stdin; fall back to the transcript
     # filename stem (verified to equal CLAUDE_CODE_SESSION_ID, which log_claim.py stamps).
     session_id = hook_data.get("session_id") or Path(transcript_path).stem
-    claim_token_sets = _claim_token_sets(message, claims)
+    claim_token_sets = _claim_token_sets(message)
     if has_fresh_log(claim_token_sets, session_id):
         emit_ok()
 

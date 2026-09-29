@@ -466,6 +466,17 @@ def test_dotted_identifier_not_split_into_extension(tmp_path):
     assert out["continue"] is True and "decision" not in out
 
 
+def test_question_sharing_phrase_is_not_a_claim(tmp_path):
+    # Regression: a QUESTION that shares a claim's phrase ("is complete") must NOT be
+    # treated as a claim by the per-sentence binding. Verifying only the REAL claim passes.
+    logp = _log_path(tmp_path)
+    _log_claim(logp, "sess-A", "config applied", "ran it")  # covers only the real (config) claim
+    out = _run({"transcript_path": _session_transcript(
+                    tmp_path, "The migration is complete? The config is complete.", "sess-A")},
+               {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": logp})
+    assert out["continue"] is True and "decision" not in out
+
+
 def test_stale_new_schema_plus_fresh_legacy_does_not_failopen(tmp_path):
     # Audit finding (migration determination): a STALE new-schema entry + a FRESH legacy
     # line must NOT revert the log to fail-open — the log is migrated, so legacy is off.
