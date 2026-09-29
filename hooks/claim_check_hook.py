@@ -239,10 +239,12 @@ _ASSERTED_END = tuple(".!:;—-")
 
 def _iter_claim_matches(text):
     """Yield (phrase, start, end) for every NON-exempt claim match, with all exemptions
-    evaluated ONCE against the full message. Binding must reuse these spans rather than
-    re-running the matcher on isolated fragments — a fence or quotation that spans a
-    fragment boundary loses its markers in isolation, which re-litigates the exemption
-    with less context and mints phantom claims out of pasted evidence."""
+    evaluated ONCE, at message level (the quoted-context exemption sees a ±80-char
+    window around each match, so an exemption crossing that window edge can be missed —
+    false-block side, narrow). Binding must reuse these spans rather than re-running the
+    matcher on isolated fragments — a fence or quotation that spans a fragment boundary
+    loses its markers in isolation, which re-litigates the exemption with less context
+    and mints phantom claims out of pasted evidence."""
     for pat in CLAIM_PATTERNS:
         for m in pat.finditer(text):
             phrase = m.group(0).strip()
