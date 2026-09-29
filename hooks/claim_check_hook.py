@@ -3,8 +3,8 @@
 claim_check_hook.py — Stop-hook enforcer skeleton.
 
 Blocks turn-end if the assistant claims "done / shipped / verified / complete"
-without a recent verification log entry. Make the agent's done-claim mean
-something.
+without a recent verification log entry that refers to that specific claim and
+was written in the same session. Make the agent's done-claim mean something.
 
 USAGE
   1. Copy hooks/claim_check_hook.py + hooks/log_claim.py into your agent config dir
@@ -29,10 +29,20 @@ NOTE — this is a STOP hook; Stop hooks block with {"decision": "block"}.
 A PreToolUse hook uses a DIFFERENT schema ({"hookSpecificOutput": {"permissionDecision": "deny"}}).
 The two are NOT interchangeable — using the wrong one is a silent no-op.
 
+KNOWN LIMITS (binding is a forcing function, not a cryptographic guarantee):
+  - Token-overlap binding raises the bar from "type any two words" to "reference this
+    claim's subject in the same session," but an agent that names the subject in its
+    verification without doing the work can still pass — that act is legible on the record.
+  - A truly subjectless closure ("Done." with no other content in the turn) is unbindable
+    and degrades to a same-session freshness floor (still stronger than global freshness).
+  - Two claims in the SAME sentence share that sentence's subject tokens (per-claim binding
+    separates claims across sentences, not within one).
+
 CUSTOMIZE
   - COMPLETION_VERBS — closure verbs that trigger the check (kept tight to avoid false-fires).
   - OPT_IN_VERBS — looser verbs; enable only if your domain needs them.
   - CLAIM_CHECK_FRESH_MIN — "fresh" window (15 is forgiving; don't go below ~5).
+  - OVERLAP_MIN_TOKENS — content tokens a log entry must share with the claim (default 1).
   - CLAIM_CHECKS_LOG_PATH env var — override the log location.
 """
 from __future__ import annotations
@@ -54,6 +64,7 @@ CLAIM_CHECKS_LOG = Path(
 CLAIM_CHECK_FRESH_MIN = 15      # minutes — log entries newer than this count as fresh
 STALE_THRESHOLD_S = 30          # transcript-flush race guard
 DEFAULT_MODE = "warn"           # warn | block | off  (start warn; promote to block once tuned)
+OVERLAP_MIN_TOKENS = 1          # a fresh log entry must share >=N content tokens with the claim
 
 # Unambiguous closure verbs — kept tight so everyday prose ("the data is current",
 # "are we done here?") does NOT false-fire.
@@ -235,8 +246,84 @@ def find_claims(text):
     return matches[:5]
 
 
+# ---------- CLAIM FINGERPRINTING (MUST stay byte-identical to log_claim.py) ----------
+# Closure verbs are stopworded: they appear in every done-claim, so binding on them
+# would be vacuous ("done" matches "done"). Only SUBJECT tokens (migration, endpoint,
+# paginator) carry the fingerprint. Cross-file consistency is pinned by a test.
+_STOPWORDS = frozenset({
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+    "has", "have", "had", "this", "that", "these", "those", "and", "or", "but",
+    "to", "of", "in", "on", "at", "it", "its", "for", "with", "now", "all",
+    "not", "from", "into", "out", "up", "down", "so", "as", "by", "just", "then",
+    "also", "ive", "weve", "our", "your", "my", "me", "we", "i",
+    # closure verbs — must NOT bind
+    "done", "complete", "completed", "completing", "ready", "verified", "verify",
+    "fixed", "fix", "resolved", "resolve", "shipped", "ship", "live", "set",
+    "wired", "implemented", "implement", "applied", "apply", "patched", "synced",
+    "finished", "finish", "production", "working",
+    # generic dev nouns — too common to bind a specific claim on their own
+    "test", "tests", "code", "file", "files", "thing", "things", "stuff",
+    "work", "item", "items", "run", "ran",
+})
+
+
+def _content_tokens(text):
+    toks = re.findall(r"[a-z0-9]+", (text or "").lower())
+    return {t for t in toks if len(t) >= 2 and t not in _STOPWORDS}
+
+
+def _sentence_around(text, idx):
+    """The sentence enclosing position `idx`, bounded by .!?\\n or string ends."""
+    start = 0
+    for i in range(idx - 1, -1, -1):
+        if text[i] in ".!?\n":
+            start = i + 1
+            break
+    end = len(text)
+    for i in range(idx, len(text)):
+        if text[i] in ".!?\n":
+            end = i
+            break
+    return text[start:end]
+
+
+def _claim_token_sets(message, claim_phrases):
+    """One token set PER claim — the content tokens of the SENTENCE each claim sits
+    in (the matched phrase itself is usually just the closure verb; the subject —
+    "migration" — lives in the sentence). Per-claim (not a pooled union) so that
+    verifying one claim cannot launder the other claims in the same turn.
+
+    Fallback: if a claim's sentence has no content tokens (a bare "Done." with no
+    subject), fall back to the whole message's tokens, so an adjacent "I refactored
+    the parser. Done." still binds on "parser". A truly subjectless message yields an
+    empty set — see has_fresh_log for how that (unbindable) case is handled."""
+    msg_tokens = _content_tokens(message)
+    low = message.lower()
+    sets = []
+    for phrase in claim_phrases:
+        j = low.find(phrase.lower())
+        toks = _content_tokens(_sentence_around(message, j)) if j != -1 else _content_tokens(phrase)
+        if not toks:
+            toks = msg_tokens
+        sets.append(toks)
+    return sets
+
+
 # ---------- FRESH LOG CHECK ----------
-def has_fresh_log(window_min=CLAIM_CHECK_FRESH_MIN):
+def has_fresh_log(claim_token_sets, session_id, window_min=CLAIM_CHECK_FRESH_MIN):
+    """A turn is cleared only if EVERY claim is covered by a fresh log entry that
+    (a) is within the window, (b) was written in THIS session (kills the cross-session
+    alibi), and (c) whose fingerprint shares >= OVERLAP_MIN_TOKENS content tokens with
+    that claim (kills the self- and unrelated-work alibis). Per-claim, not pooled —
+    verifying one claim cannot launder the others in the same turn.
+
+    Legacy entries (pre-binding schema) are honored ONLY when the log has no new-schema
+    entries at all (a genuinely un-migrated log), so one hand-written legacy line can't
+    downgrade an upgraded log. Legacy fail-open self-expires within one window.
+
+    A contentless claim (empty token set — a bare subjectless "Done.") is unbindable and
+    is covered by the same-session freshness floor only. Documented residual limit; still
+    strictly stronger than the global-freshness behavior it replaces."""
     if not CLAIM_CHECKS_LOG.exists():
         return False
     try:
@@ -245,7 +332,10 @@ def has_fresh_log(window_min=CLAIM_CHECK_FRESH_MIN):
         return False
     now_ts = datetime.now(timezone.utc).timestamp()
     cutoff = now_ts - (window_min * 60)
-    for line in reversed(lines[-20:]):
+    fresh_entry_tokens = []   # same-session, new-schema, fresh entries
+    legacy_fresh = False
+    have_new_schema = False
+    for line in reversed(lines[-200:]):
         line = line.strip()
         if not line:
             continue
@@ -254,11 +344,30 @@ def has_fresh_log(window_min=CLAIM_CHECK_FRESH_MIN):
             ts_str = entry.get("timestamp") or entry.get("ts")
             if not ts_str:
                 continue
-            if _parse_ts_as_utc(ts_str) >= cutoff:
-                return True
+            if _parse_ts_as_utc(ts_str) < cutoff:
+                continue  # stale
+            if "session_id" not in entry or "claim_fingerprint" not in entry:
+                legacy_fresh = True
+                continue
+            have_new_schema = True
+            esid = entry.get("session_id") or ""
+            if session_id and esid != session_id:
+                continue  # another session's (or a session-less) entry cannot alibi this claim
+            fresh_entry_tokens.append(set(str(entry.get("claim_fingerprint") or "").split()))
         except (json.JSONDecodeError, ValueError, TypeError, AttributeError):
             continue
-    return False
+    # Genuinely un-migrated log (only legacy entries present) → preserve prior fail-open.
+    if legacy_fresh and not have_new_schema:
+        return True
+    # Every claim must be individually covered by a fresh, same-session entry.
+    for cset in claim_token_sets:
+        if not cset:
+            if not fresh_entry_tokens:
+                return False  # subjectless claim, no same-session evidence at all
+            continue          # subjectless claim → same-session freshness floor
+        if not any(len(cset & ets) >= OVERLAP_MIN_TOKENS for ets in fresh_entry_tokens):
+            return False
+    return True
 
 
 # ---------- MAIN ----------
@@ -287,18 +396,25 @@ def main():
     if not claims:
         emit_ok()
 
-    if has_fresh_log():
+    # The transcript filename stem IS the session UUID (== CLAUDE_CODE_SESSION_ID that
+    # log_claim.py stamps). This is how the entry is bound to THIS session.
+    session_id = Path(transcript_path).stem
+    claim_token_sets = _claim_token_sets(message, claims)
+    if has_fresh_log(claim_token_sets, session_id):
         emit_ok()
 
     bullets = "\n".join(f'  - "{p}"' for p in claims)
     reason = (
-        f"⚠️  Claim-check enforcer — done-claim detected without fresh verification log entry.\n"
+        f"⚠️  Claim-check enforcer — done-claim detected without a fresh verification "
+        f"log entry that refers to THIS claim, from THIS session.\n"
         f"Matched phrases:\n{bullets}\n\n"
-        f"Last claim_checks/log.jsonl entry is older than {CLAIM_CHECK_FRESH_MIN}min.\n"
+        f"An entry clears this gate only if it is < {CLAIM_CHECK_FRESH_MIN}min old, was written "
+        f"in this session, and its claim references what you're claiming here.\n"
         f"Before stopping this turn:\n"
-        f"  1. Run a real verification (test, end-to-end check, etc.)\n"
-        f"  2. Log it:  python3 log_claim.py \"<what you claim>\" \"<how you verified>\"\n"
-        f"  3. Re-reply to the operator\n\n"
+        f"  1. Actually run the verification for THIS claim — the test, the end-to-end\n"
+        f"     check, or a first-hand read of the artifact you're claiming about.\n"
+        f"  2. Only if it genuinely passed, record the evidence for this specific claim.\n"
+        f"A fresh entry about unrelated work, or from another session, will NOT clear this gate.\n\n"
         f"Override: CLAIM_CHECK_ENFORCE_MODE=warn or =off"
     )
 
