@@ -9,10 +9,12 @@ of the doctrine in [`docs/THE_OPERATORS_CODE.md`](docs/THE_OPERATORS_CODE.md).
 The claim-check hook now binds a fresh verification entry to the specific **claim** and
 **session**, closing the self-/unrelated-work/cross-session **alibi** hole (#2, reported by
 gcracolici with reproductions). `log_claim.py` stamps `session_id` (from `CLAUDE_CODE_SESSION_ID`)
-and a `claim_fingerprint` (content tokens of the claim); the hook requires a fresh, same-session
-entry whose fingerprint shares a subject token with the claim. Legacy entries (pre-binding) stay
-fail-open and self-expire within one freshness window. The block message now names the verification
-required rather than the command that clears the gate.
+and a `claim_fingerprint` (content tokens of the claim **and** its verification); the hook requires,
+per claim, a fresh same-session entry whose fingerprint shares a subject token with that claim's
+sentence. Legacy (pre-binding) entries are honored only until the log has any binding-schema entry
+(after that, off for good); the block message now names the verification required rather than the
+command that clears the gate. Token overlap is a forcing function, not a proof — see the hook's
+`KNOWN LIMITS`.
 
 ## v0.1.0 — Initial public release
 

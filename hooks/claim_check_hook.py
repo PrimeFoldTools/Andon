@@ -30,13 +30,17 @@ A PreToolUse hook uses a DIFFERENT schema ({"hookSpecificOutput": {"permissionDe
 The two are NOT interchangeable — using the wrong one is a silent no-op.
 
 KNOWN LIMITS (binding is a forcing function, not a cryptographic guarantee):
-  - Token-overlap binding raises the bar from "type any two words" to "reference this
-    claim's subject in the same session," but an agent that names the subject in its
-    verification without doing the work can still pass — that act is legible on the record.
+  - Binding is by content-token overlap: it establishes TOPICAL correspondence, not proof.
+    An agent that names the subject in its verification without doing the work can pass
+    (legible on the record), and an incidental shared word — a file extension ("py"), an
+    adverb ("successfully"), a number ("200") — can bind unrelated claim/evidence.
   - A truly subjectless closure ("Done." with no other content in the turn) is unbindable
     and degrades to a same-session freshness floor (still stronger than global freshness).
-  - Two claims in the SAME sentence share that sentence's subject tokens (per-claim binding
-    separates claims across sentences, not within one).
+  - Two claims in the SAME sentence share that sentence's subject tokens (claims in
+    DIFFERENT sentences are bound separately).
+  - log_claim.py records the session from CLAUDE_CODE_SESSION_ID (set by Claude Code). Under
+    a harness that does not set it, entries are session-less and cannot clear a session-bound
+    claim — the verification must run in the same session that makes the claim.
 
 CUSTOMIZE
   - COMPLETION_VERBS — closure verbs that trigger the check (kept tight to avoid false-fires).
@@ -272,40 +276,30 @@ def _content_tokens(text):
     return {t for t in toks if len(t) >= 2 and t not in _STOPWORDS}
 
 
-def _sentence_around(text, idx):
-    """The sentence enclosing position `idx`, bounded by .!?\\n or string ends."""
-    start = 0
-    for i in range(idx - 1, -1, -1):
-        if text[i] in ".!?\n":
-            start = i + 1
-            break
-    end = len(text)
-    for i in range(idx, len(text)):
-        if text[i] in ".!?\n":
-            end = i
-            break
-    return text[start:end]
+# Split on sentence punctuation FOLLOWED BY whitespace (or a newline). Requiring the
+# whitespace keeps dotted identifiers intact: "migration.py" is NOT a sentence boundary.
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n")
 
 
 def _claim_token_sets(message, claim_phrases):
-    """One token set PER claim — the content tokens of the SENTENCE each claim sits
-    in (the matched phrase itself is usually just the closure verb; the subject —
-    "migration" — lives in the sentence). Per-claim (not a pooled union) so that
-    verifying one claim cannot launder the other claims in the same turn.
+    """One token set PER claim-bearing SENTENCE (the matched phrase is usually just the
+    closure verb; the subject — "migration" — lives in the sentence). Giving each
+    claim-bearing sentence its own set means two same-phrased claims in DIFFERENT
+    sentences ("The docs are complete. The migration is complete.") are bound
+    separately — verifying one cannot launder the other. Splitting on punctuation +
+    whitespace keeps dotted identifiers ("migration.py") whole.
 
-    Fallback: if a claim's sentence has no content tokens (a bare "Done." with no
-    subject), fall back to the whole message's tokens, so an adjacent "I refactored
-    the parser. Done." still binds on "parser". A truly subjectless message yields an
-    empty set — see has_fresh_log for how that (unbindable) case is handled."""
+    A claim-bearing sentence with no content tokens (a bare "Done.") falls back to the
+    whole message, so "I refactored the parser. Done." still binds on "parser". A truly
+    subjectless message yields an empty set — see has_fresh_log for that (unbindable) case."""
     msg_tokens = _content_tokens(message)
-    low = message.lower()
+    low_phrases = [p.lower() for p in claim_phrases]
     sets = []
-    for phrase in claim_phrases:
-        j = low.find(phrase.lower())
-        toks = _content_tokens(_sentence_around(message, j)) if j != -1 else _content_tokens(phrase)
-        if not toks:
-            toks = msg_tokens
-        sets.append(toks)
+    for sentence in _SENTENCE_SPLIT.split(message):
+        if any(p in sentence.lower() for p in low_phrases):
+            sets.append(_content_tokens(sentence) or msg_tokens)
+    if not sets:  # a phrase straddled a split boundary — fall back rather than pass free
+        sets.append(msg_tokens)
     return sets
 
 
@@ -332,9 +326,12 @@ def has_fresh_log(claim_token_sets, session_id, window_min=CLAIM_CHECK_FRESH_MIN
         return False
     now_ts = datetime.now(timezone.utc).timestamp()
     cutoff = now_ts - (window_min * 60)
+    # Migration status is determined over the WHOLE file, independent of freshness or the
+    # tail window: once the log has ANY binding-schema entry, legacy fail-open is off for
+    # good (a stale new-schema entry + a fresh hand-written legacy line must NOT revert it).
+    have_new_schema = any("claim_fingerprint" in ln for ln in lines)
     fresh_entry_tokens = []   # same-session, new-schema, fresh entries
     legacy_fresh = False
-    have_new_schema = False
     for line in reversed(lines[-200:]):
         line = line.strip()
         if not line:
@@ -349,7 +346,6 @@ def has_fresh_log(claim_token_sets, session_id, window_min=CLAIM_CHECK_FRESH_MIN
             if "session_id" not in entry or "claim_fingerprint" not in entry:
                 legacy_fresh = True
                 continue
-            have_new_schema = True
             esid = entry.get("session_id") or ""
             if session_id and esid != session_id:
                 continue  # another session's (or a session-less) entry cannot alibi this claim
@@ -396,9 +392,9 @@ def main():
     if not claims:
         emit_ok()
 
-    # The transcript filename stem IS the session UUID (== CLAUDE_CODE_SESSION_ID that
-    # log_claim.py stamps). This is how the entry is bound to THIS session.
-    session_id = Path(transcript_path).stem
+    # Prefer the session id the harness passes on stdin; fall back to the transcript
+    # filename stem (verified to equal CLAUDE_CODE_SESSION_ID, which log_claim.py stamps).
+    session_id = hook_data.get("session_id") or Path(transcript_path).stem
     claim_token_sets = _claim_token_sets(message, claims)
     if has_fresh_log(claim_token_sets, session_id):
         emit_ok()

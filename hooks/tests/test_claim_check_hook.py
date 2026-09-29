@@ -432,3 +432,51 @@ def test_handwritten_legacy_line_cannot_downgrade_migrated_log(tmp_path):
     out = _run({"transcript_path": _session_transcript(tmp_path, "The migration is complete.", "sess-A")},
                {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": str(logp)})
     assert out.get("decision") == "block"
+
+
+def test_repeated_phrase_across_sentences_binds_separately(tmp_path):
+    # Audit finding: the SAME closure phrase in two sentences with different subjects
+    # must be bound per-sentence — verifying one must not launder the other.
+    logp = _log_path(tmp_path)
+    _log_claim(logp, "sess-A", "migration applied", "ran alembic upgrade")  # only the migration
+    out = _run({"transcript_path": _session_transcript(
+                    tmp_path, "The migration is complete. The endpoint is complete.", "sess-A")},
+               {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": logp})
+    assert out.get("decision") == "block"
+
+
+def test_repeated_phrase_across_sentences_both_verified_passes(tmp_path):
+    # Paired pass: covering BOTH same-phrased claims clears the turn.
+    logp = _log_path(tmp_path)
+    _log_claim(logp, "sess-A", "migration applied", "ran alembic upgrade")
+    _log_claim(logp, "sess-A", "endpoint deployed", "curl /health 200")
+    out = _run({"transcript_path": _session_transcript(
+                    tmp_path, "The migration is complete. The endpoint is complete.", "sess-A")},
+               {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": logp})
+    assert out["continue"] is True and "decision" not in out
+
+
+def test_dotted_identifier_not_split_into_extension(tmp_path):
+    # Audit finding: "migration.py" must not segment on the dot (which would truncate the
+    # subject to "py"). Honest evidence naming the module clears it; it isn't false-blocked.
+    logp = _log_path(tmp_path)
+    _log_claim(logp, "sess-A", "updated the migration module", "ran the migration")
+    out = _run({"transcript_path": _session_transcript(tmp_path, "The migration.py is complete.", "sess-A")},
+               {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": logp})
+    assert out["continue"] is True and "decision" not in out
+
+
+def test_stale_new_schema_plus_fresh_legacy_does_not_failopen(tmp_path):
+    # Audit finding (migration determination): a STALE new-schema entry + a FRESH legacy
+    # line must NOT revert the log to fail-open — the log is migrated, so legacy is off.
+    logp = tmp_path / "log.jsonl"
+    stale = (datetime.now(timezone.utc) - timedelta(minutes=90)).isoformat()
+    fresh = datetime.now(timezone.utc).isoformat()
+    logp.write_text(
+        json.dumps({"timestamp": stale, "claim": "old", "verification": "z",
+                    "session_id": "sess-A", "claim_fingerprint": "old"}) + "\n" +   # stale new-schema
+        json.dumps({"timestamp": fresh, "claim": "x", "verification": "y"}) + "\n"   # fresh legacy
+    )
+    out = _run({"transcript_path": _session_transcript(tmp_path, "The migration is complete.", "sess-A")},
+               {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": str(logp)})
+    assert out.get("decision") == "block"
