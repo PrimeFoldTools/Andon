@@ -35,6 +35,7 @@ def _clean_env(extra=None):
     env = dict(os.environ)
     env.pop("CLAIM_CHECK_ENFORCE_MODE", None)
     env.pop("CLAIM_CHECKS_LOG_PATH", None)
+    env.pop("CLAUDE_CODE_SESSION_ID", None)  # hermetic: never inherit the runner's session
     if extra:
         env.update(extra)
     return env
@@ -52,6 +53,26 @@ def _run(stdin_obj, env_extra=None):
 
 def _log_path(tmp_path):
     return str(tmp_path / "log.jsonl")
+
+
+def _session_transcript(tmp_path, text, session_id):
+    """A CURRENT assistant transcript whose FILENAME stem is the session id —
+    that stem is exactly how the hook derives the session (== CLAUDE_CODE_SESSION_ID)."""
+    p = tmp_path / f"{session_id}.jsonl"
+    entry = {
+        "type": "assistant",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "message": {"content": [{"type": "text", "text": text}]},
+    }
+    p.write_text(json.dumps(entry) + "\n")
+    return str(p)
+
+
+def _log_claim(logp, session_id, claim, verification):
+    """Run log_claim.py the way an agent session would — with CLAUDE_CODE_SESSION_ID set."""
+    env = _clean_env({"CLAIM_CHECKS_LOG_PATH": logp, "CLAUDE_CODE_SESSION_ID": session_id})
+    subprocess.run([sys.executable, WRITER, claim, verification],
+                   capture_output=True, text=True, env=env, check=True)
 
 
 # ---- safe pass-through (must never crash / never spuriously block) ----
@@ -196,11 +217,10 @@ def test_log_claim_creates_dir_and_appends(tmp_path):
 
 
 def test_fresh_log_lets_claim_pass(tmp_path):
+    # A fresh, same-session entry whose fingerprint shares the claim's subject clears it.
     logp = _log_path(tmp_path)
-    env = _clean_env({"CLAIM_CHECKS_LOG_PATH": logp})
-    subprocess.run([sys.executable, WRITER, "shipped feature", "ran pytest"],
-                   capture_output=True, text=True, env=env, check=True)
-    out = _run({"transcript_path": _transcript(tmp_path, "The feature is shipped.")},
+    _log_claim(logp, "sess-A", "shipped the feature", "ran pytest")
+    out = _run({"transcript_path": _session_transcript(tmp_path, "The feature is shipped.", "sess-A")},
                {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": logp})
     assert out["continue"] is True and "decision" not in out
 
@@ -247,4 +267,305 @@ def test_malformed_log_line_does_not_crash(tmp_path):
     out = _run({"transcript_path": _transcript(tmp_path, "The migration is complete.")},
                {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": str(logp)})
     # Valid output (exit 0 is asserted in _run); bad line skipped → no fresh log → blocks.
+    assert out.get("decision") == "block"
+
+
+# ---- issue #2: bind the fresh log entry to (claim ∧ session) ----
+# Reporter's three alibi repros must BLOCK; each has a paired legitimate-work test
+# that must PASS, so nothing passes by "always block."
+
+def test_self_alibi_blocked(tmp_path):
+    # repro #1: a fresh entry whose content is unrelated to the claim must NOT clear it.
+    logp = _log_path(tmp_path)
+    _log_claim(logp, "sess-A", "done", "checked")  # fingerprint has no content tokens
+    out = _run({"transcript_path": _session_transcript(tmp_path, "The migration is complete.", "sess-A")},
+               {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": logp})
+    assert out.get("decision") == "block"
+
+
+def test_matching_claim_passes(tmp_path):
+    # false-block guard for test_self_alibi_blocked: a same-session entry that shares a
+    # content token with the claim ("migration") DOES clear it.
+    logp = _log_path(tmp_path)
+    _log_claim(logp, "sess-A", "migration applied cleanly", "ran alembic upgrade head, 0 errors")
+    out = _run({"transcript_path": _session_transcript(tmp_path, "The migration is complete.", "sess-A")},
+               {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": logp})
+    assert out["continue"] is True and "decision" not in out
+
+
+def test_unrelated_work_alibi_blocked(tmp_path):
+    # repro #2: verifying task A must not license an unverified claim about task B.
+    logp = _log_path(tmp_path)
+    _log_claim(logp, "sess-A", "database migration verified", "ran migration test")  # task A
+    out = _run({"transcript_path": _session_transcript(tmp_path, "The API endpoint is shipped.", "sess-A")},
+               {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": logp})  # task B claim
+    assert out.get("decision") == "block"
+
+
+def test_cross_session_alibi_blocked(tmp_path):
+    # repro #3 (the most dangerous): a fresh, token-MATCHING entry from another session
+    # must NOT clear this session's claim — even though tokens match and it's fresh.
+    logp = _log_path(tmp_path)
+    _log_claim(logp, "sess-A", "migration applied", "ran test")
+    out = _run({"transcript_path": _session_transcript(tmp_path, "The migration is complete.", "sess-B")},
+               {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": logp})
+    assert out.get("decision") == "block"
+
+
+def test_legacy_entry_still_passes(tmp_path):
+    # backward-compat: a pre-binding entry (no session_id / claim_fingerprint) that is
+    # fresh keeps the old freshness-only behavior — fail-open, so the upgrade never
+    # traps in-flight legitimate work. (These entries self-expire within one window.)
+    logp = tmp_path / "log.jsonl"
+    fresh_ts = datetime.now(timezone.utc).isoformat()
+    logp.write_text(json.dumps({"timestamp": fresh_ts, "claim": "x", "verification": "y"}) + "\n")
+    out = _run({"transcript_path": _session_transcript(tmp_path, "The migration is complete.", "sess-A")},
+               {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": str(logp)})
+    assert out["continue"] is True and "decision" not in out
+
+
+def test_new_schema_stale_still_blocks(tmp_path):
+    # freshness still dominates: a session+token MATCHING new-schema entry that is stale
+    # must not clear the claim.
+    logp = tmp_path / "log.jsonl"
+    stale_ts = (datetime.now(timezone.utc) - timedelta(minutes=90)).isoformat()
+    logp.write_text(json.dumps({
+        "timestamp": stale_ts, "claim": "migration applied", "verification": "ran test",
+        "session_id": "sess-A", "claim_fingerprint": "migration applied",
+    }) + "\n")
+    out = _run({"transcript_path": _session_transcript(tmp_path, "The migration is complete.", "sess-A")},
+               {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": str(logp)})
+    assert out.get("decision") == "block"
+
+
+def test_closure_verbs_do_not_bind(tmp_path):
+    # Mutation guard (behavioral): closure verbs are stopworded, so a shared "complete"
+    # between claim and log must NOT create a spurious bind. If someone un-stopwords the
+    # closure verbs, claim {migration, complete} and log {task, complete} would overlap on
+    # "complete" and this would PASS — flipping this assertion RED.
+    logp = _log_path(tmp_path)
+    _log_claim(logp, "sess-A", "task complete", "did the task")  # shares only "complete" (stopworded)
+    out = _run({"transcript_path": _session_transcript(tmp_path, "The migration is complete.", "sess-A")},
+               {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": logp})
+    assert out.get("decision") == "block"
+
+
+def _import_hook_modules():
+    import importlib
+    sys.path.insert(0, str(Path(HOOK).parent))
+    return importlib.import_module("claim_check_hook"), importlib.import_module("log_claim")
+
+
+def test_content_tokens_stopwords_closure_verbs():
+    hook, _ = _import_hook_modules()
+    toks = hook._content_tokens("The migration is complete.")
+    assert "migration" in toks
+    assert "complete" not in toks and "is" not in toks and "the" not in toks
+
+
+def test_fingerprint_consistency_across_files():
+    # Guard the intentional duplication: assert the stopword set AND the tokenizer
+    # SOURCE are identical, not just that they agree on a few sample strings (a shallow
+    # sample would miss drift on any word not in the sample).
+    import inspect
+    hook, writer = _import_hook_modules()
+    assert hook._STOPWORDS == writer._STOPWORDS
+    assert inspect.getsource(hook._content_tokens) == inspect.getsource(writer._content_tokens)
+
+
+def test_multi_claim_partial_verification_blocks(tmp_path):
+    # Per-claim binding: two claims in two sentences; verifying only the first must NOT
+    # clear the second (no union laundering across claims).
+    logp = _log_path(tmp_path)
+    _log_claim(logp, "sess-A", "migration applied", "ran alembic upgrade")  # covers claim 1 only
+    out = _run({"transcript_path": _session_transcript(
+                    tmp_path, "The migration is complete. The API endpoint is shipped.", "sess-A")},
+               {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": logp})
+    assert out.get("decision") == "block"
+
+
+def test_multi_claim_full_verification_passes(tmp_path):
+    # Paired pass for the above: covering BOTH claims (two entries) clears the turn.
+    logp = _log_path(tmp_path)
+    _log_claim(logp, "sess-A", "migration applied", "ran alembic upgrade")
+    _log_claim(logp, "sess-A", "endpoint deployed", "curl /health returns 200")
+    out = _run({"transcript_path": _session_transcript(
+                    tmp_path, "The migration is complete. The API endpoint is shipped.", "sess-A")},
+               {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": logp})
+    assert out["continue"] is True and "decision" not in out
+
+
+def test_empty_session_entry_cannot_alibi(tmp_path):
+    # An entry written without CLAUDE_CODE_SESSION_ID (session_id == "") must NOT satisfy
+    # a session-bound claim — otherwise the cross-session hole reopens via a blank session.
+    logp = tmp_path / "log.jsonl"
+    fresh_ts = datetime.now(timezone.utc).isoformat()
+    logp.write_text(json.dumps({
+        "timestamp": fresh_ts, "claim": "migration applied", "verification": "ran test",
+        "session_id": "", "claim_fingerprint": "migration",
+    }) + "\n")
+    out = _run({"transcript_path": _session_transcript(tmp_path, "The migration is complete.", "sess-B")},
+               {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": str(logp)})
+    assert out.get("decision") == "block"
+
+
+def test_paraphrase_verification_passes(tmp_path):
+    # False-block guard: the claim's subject appears in the VERIFICATION text, not the
+    # claim arg. Because the fingerprint covers claim + verification, it still binds.
+    logp = _log_path(tmp_path)
+    _log_claim(logp, "sess-A", "shipped it", "the endpoint returns 200 on /health")
+    out = _run({"transcript_path": _session_transcript(tmp_path, "The endpoint is shipped.", "sess-A")},
+               {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": logp})
+    assert out["continue"] is True and "decision" not in out
+
+
+def test_handwritten_legacy_line_cannot_downgrade_migrated_log(tmp_path):
+    # A hand-appended legacy-shaped line must NOT revert an already-migrated log to
+    # fail-open: because a new-schema entry exists, legacy entries are ignored.
+    logp = tmp_path / "log.jsonl"
+    now = datetime.now(timezone.utc).isoformat()
+    logp.write_text(
+        json.dumps({"timestamp": now, "claim": "x", "verification": "y"}) + "\n" +        # legacy
+        json.dumps({"timestamp": now, "claim": "unrelated", "verification": "z",
+                    "session_id": "sess-A", "claim_fingerprint": "unrelated"}) + "\n"      # new-schema
+    )
+    out = _run({"transcript_path": _session_transcript(tmp_path, "The migration is complete.", "sess-A")},
+               {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": str(logp)})
+    assert out.get("decision") == "block"
+
+
+# ---- exemptions must survive fragment attribution (spans, not per-fragment re-match) ----
+def test_fenced_evidence_does_not_mint_phantom_claim(tmp_path):
+    # Regression: pasting your own verification evidence in a code fence must not create
+    # a phantom claim. "done: true" inside a fence is backtick-exempt at message level;
+    # a per-fragment re-match would see it at ^ with no fence markers and false-block.
+    logp = _log_path(tmp_path)
+    _log_claim(logp, "sess-A", "migration applied", "ran alembic")
+    msg = "The migration is complete.\n```\ndone: true\n```"
+    out = _run({"transcript_path": _session_transcript(tmp_path, msg, "sess-A")},
+               {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": logp})
+    assert out["continue"] is True and "decision" not in out
+
+
+def test_fenced_log_output_does_not_mint_phantom_claim(tmp_path):
+    logp = _log_path(tmp_path)
+    _log_claim(logp, "sess-A", "migration applied", "ran alembic")
+    msg = "The migration is complete.\n\nLog output:\n```\nINFO: setup is complete\n```"
+    out = _run({"transcript_path": _session_transcript(tmp_path, msg, "sess-A")},
+               {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": logp})
+    assert out["continue"] is True and "decision" not in out
+
+
+def test_quote_spanning_sentence_boundary_stays_exempt(tmp_path):
+    # A quotation containing a sentence break must keep its exemption: the split lands
+    # inside the quote, and a per-fragment re-match would see an unpaired quote fragment.
+    logp = _log_path(tmp_path)
+    _log_claim(logp, "sess-A", "migration applied", "ran alembic")
+    msg = ('The migration is complete. Filler sentence to separate things here. '
+           'He said "the migration is done. Proceed when possible" yesterday.')
+    out = _run({"transcript_path": _session_transcript(tmp_path, msg, "sess-A")},
+               {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": logp})
+    assert out["continue"] is True and "decision" not in out
+
+
+def test_done_then_question_still_gates(tmp_path):
+    # "Done. Anything else?" — the completed assertion must gate; the FOLLOWING question
+    # must not exempt it (the question guard is for the claim's own sentence only).
+    for text in ("Done. Anything else?", "All set. Should I push?"):
+        out = _run({"transcript_path": _session_transcript(tmp_path, text, "sess-A")},
+                   {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": _log_path(tmp_path)})
+        assert out.get("decision") == "block", text
+
+
+def test_nearby_quote_does_not_silence_real_claim(tmp_path):
+    # An exemption match must OVERLAP the claim, not merely co-occur in the ±80 window:
+    # a quoted "done is done" in the NEXT sentence must not silence the real claim.
+    out = _run({"transcript_path": _session_transcript(
+                    tmp_path, 'The migration is complete. As they say, "done is done".', "sess-A")},
+               {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": _log_path(tmp_path)})
+    assert out.get("decision") == "block"
+
+
+def test_hard_wrapped_claims_bind_separately(tmp_path):
+    # A match spanning a line-wrap ("is\ncomplete") binds the union of the fragments it
+    # touches — so each hard-wrapped claim keeps its own subject and one entry cannot
+    # clear both.
+    logp = _log_path(tmp_path)
+    _log_claim(logp, "sess-A", "migration applied", "ran alembic")  # migration only
+    msg = "The migration is\ncomplete. The endpoint is\nshipped."
+    out = _run({"transcript_path": _session_transcript(tmp_path, msg, "sess-A")},
+               {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": logp})
+    assert out.get("decision") == "block"
+
+
+def test_fingerprint_string_in_value_does_not_deny_legacy_failopen(tmp_path):
+    # Migration is detected by the actual KEY, not a substring: a legacy-only log whose
+    # entry VALUE mentions "claim_fingerprint" is still un-migrated → fail-open holds.
+    logp = tmp_path / "log.jsonl"
+    fresh = datetime.now(timezone.utc).isoformat()
+    logp.write_text(json.dumps({
+        "timestamp": fresh, "claim": "added claim_fingerprint field to the schema",
+        "verification": "reviewed it",
+    }) + "\n")
+    out = _run({"transcript_path": _session_transcript(tmp_path, "The migration is complete.", "sess-A")},
+               {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": str(logp)})
+    assert out["continue"] is True and "decision" not in out
+
+
+def test_repeated_phrase_across_sentences_binds_separately(tmp_path):
+    # Audit finding: the SAME closure phrase in two sentences with different subjects
+    # must be bound per-sentence — verifying one must not launder the other.
+    logp = _log_path(tmp_path)
+    _log_claim(logp, "sess-A", "migration applied", "ran alembic upgrade")  # only the migration
+    out = _run({"transcript_path": _session_transcript(
+                    tmp_path, "The migration is complete. The endpoint is complete.", "sess-A")},
+               {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": logp})
+    assert out.get("decision") == "block"
+
+
+def test_repeated_phrase_across_sentences_both_verified_passes(tmp_path):
+    # Paired pass: covering BOTH same-phrased claims clears the turn.
+    logp = _log_path(tmp_path)
+    _log_claim(logp, "sess-A", "migration applied", "ran alembic upgrade")
+    _log_claim(logp, "sess-A", "endpoint deployed", "curl /health 200")
+    out = _run({"transcript_path": _session_transcript(
+                    tmp_path, "The migration is complete. The endpoint is complete.", "sess-A")},
+               {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": logp})
+    assert out["continue"] is True and "decision" not in out
+
+
+def test_dotted_identifier_not_split_into_extension(tmp_path):
+    # Audit finding: "migration.py" must not segment on the dot (which would truncate the
+    # subject to "py"). Honest evidence naming the module clears it; it isn't false-blocked.
+    logp = _log_path(tmp_path)
+    _log_claim(logp, "sess-A", "updated the migration module", "ran the migration")
+    out = _run({"transcript_path": _session_transcript(tmp_path, "The migration.py is complete.", "sess-A")},
+               {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": logp})
+    assert out["continue"] is True and "decision" not in out
+
+
+def test_question_sharing_phrase_is_not_a_claim(tmp_path):
+    # Regression: a QUESTION that shares a claim's phrase ("is complete") must NOT be
+    # treated as a claim by the per-sentence binding. Verifying only the REAL claim passes.
+    logp = _log_path(tmp_path)
+    _log_claim(logp, "sess-A", "config applied", "ran it")  # covers only the real (config) claim
+    out = _run({"transcript_path": _session_transcript(
+                    tmp_path, "The migration is complete? The config is complete.", "sess-A")},
+               {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": logp})
+    assert out["continue"] is True and "decision" not in out
+
+
+def test_stale_new_schema_plus_fresh_legacy_does_not_failopen(tmp_path):
+    # Audit finding (migration determination): a STALE new-schema entry + a FRESH legacy
+    # line must NOT revert the log to fail-open — the log is migrated, so legacy is off.
+    logp = tmp_path / "log.jsonl"
+    stale = (datetime.now(timezone.utc) - timedelta(minutes=90)).isoformat()
+    fresh = datetime.now(timezone.utc).isoformat()
+    logp.write_text(
+        json.dumps({"timestamp": stale, "claim": "old", "verification": "z",
+                    "session_id": "sess-A", "claim_fingerprint": "old"}) + "\n" +   # stale new-schema
+        json.dumps({"timestamp": fresh, "claim": "x", "verification": "y"}) + "\n"   # fresh legacy
+    )
+    out = _run({"transcript_path": _session_transcript(tmp_path, "The migration is complete.", "sess-A")},
+               {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": str(logp)})
     assert out.get("decision") == "block"
