@@ -49,6 +49,7 @@ KNOWN LIMITS (binding is a forcing function, not a cryptographic guarantee):
 CUSTOMIZE
   - COMPLETION_VERBS — closure verbs that trigger the check (kept tight to avoid false-fires).
   - OPT_IN_VERBS — looser verbs; enable only if your domain needs them.
+  - CLOSURE_NOUNS — subjects for the bare "Task complete!" / "Migration done." form.
   - CLAIM_CHECK_FRESH_MIN — "fresh" window (15 is forgiving; don't go below ~5).
   - OVERLAP_MIN_TOKENS — content tokens a log entry must share with the claim (default 1).
   - CLAIM_CHECKS_LOG_PATH env var — override the log location.
@@ -77,18 +78,43 @@ OVERLAP_MIN_TOKENS = 1          # a fresh log entry must share >=N content token
 # Unambiguous closure verbs — kept tight so everyday prose ("the data is current",
 # "are we done here?") does NOT false-fire.
 COMPLETION_VERBS = (
-    "ready", "shipped", "complete", "completed", "done",
+    "ready", "shipped", "complete", "completed", "done", "finished",
     "verified", "fixed", "resolved", "production[\\s-]ready",
+    # State-of-the-thing closures: "the fix is in place", "everything is now
+    # wired up". Bare "wired" is NOT included — "the button is wired to the
+    # handler" is description, not closure. "live" is below, it needs a guard.
+    "in[\\s-]place", "wired[\\s-]up",
+)
+# "live" is a closure only when it ENDS the clause: "the change is live",
+# "the change is live now". Attributive and compound uses are ordinary English
+# — "this is live data", "is live-streaming to viewers" — so it carries its own
+# terminal guard instead of sitting in the list above.
+LIVE_VERB = (
+    r"live(?![-\u2010-\u2015\w])"
+    r"(?=\s*(?:[.,;:!?)\]]|$|\b(?:now|again|already|and|on|in|for)\b))"
 )
 # Looser verbs — higher false-positive rate in normal English. Add deliberately if your
-# domain needs them: "live", "functional", "applied", "patched", "synced",
-# "current", "in[\\s-]sync", "wired".
+# domain needs them: "functional", "applied", "patched", "synced", "current",
+# "in[\\s-]sync". NOT "working" — "I'm now working on the tests" would fire.
 OPT_IN_VERBS = ()
 COMPLETION_VERBS = COMPLETION_VERBS + OPT_IN_VERBS
 
+# Subject-noun closures: "Task complete!", "Migration done." — a small noun list
+# plus a closure verb, anchored to sentence start, so it stays narrow.
+CLOSURE_NOUNS = (
+    "task", "work", "job", "migration", "change", "fix", "deploy", "deployment",
+    "refactor", "build", "patch", "update", "release", "rollout", "feature",
+    "implementation", "cleanup", "ticket", "pr", "merge",
+)
+
 
 # ---------- PATTERNS ----------
-_VERBS = "|".join(COMPLETION_VERBS)
+_VERBS = "|".join(COMPLETION_VERBS + (LIVE_VERB,))
+_CLOSURE_NOUNS = "|".join(CLOSURE_NOUNS)
+# Optional first-person lead-in for the sentence-start forms. Agents write
+# "I've implemented the migration." far more often than "Implemented the
+# migration." — without this the leading subject defeated both anchors.
+_SUBJECT = r"(?:(?:i|we)(?:'ve|\s+have|\s+just|\s+have\s+just)?\s+)?"
 
 CLAIM_PATTERNS = (
     # Standalone / sentence-start closure markers:
@@ -96,18 +122,30 @@ CLAIM_PATTERNS = (
     re.compile(
         rf"(?im)(?:^|(?<=[.!?])\s+|\n)\s*"
         rf"(?:done|complete|completed|ready|verified|fixed|resolved|shipped|"
-        rf"production[\s-]ready|all\s+set)\b"
+        rf"implemented|finished|production[\s-]ready|all\s+set)\b"
+        rf"(?:\s*(?:[.!:;]|—|-)|\s*$)"
+    ),
+    # Subject-noun closure: "Task complete!", "Migration done." — bare noun +
+    # closure verb with no copula. ("The fix is done." is the auxiliary
+    # pattern below, not this one.)
+    re.compile(
+        rf"(?im)(?:^|(?<=[.!?])\s+|\n)\s*"
+        rf"(?:(?:the|this|that)\s+)?(?:{_CLOSURE_NOUNS})\s+"
+        rf"(?:done|complete|completed|finished|shipped|deployed|merged|applied|verified)\b"
         rf"(?:\s*(?:[.!:;]|—|-)|\s*$)"
     ),
     # Leading action-claim forms — REQUIRE a determiner after the verb so that
     # ordinary participle-adjective prose ("Fixed income securities…",
     # "Shipped goods arrived…", "Verified users get a badge…") does NOT
     # false-fire. Only "Shipped the fix.", "Fixed the tests.",
-    # "Implemented the migration." (verb + determiner + object) trigger.
+    # "Implemented the migration." (verb + determiner + object) trigger — with or
+    # without a first-person lead-in ("I've implemented the migration.",
+    # "We have fixed the tests.", "I finished the migration."). The determiner
+    # requirement is what keeps "We have verified users in the table" exempt.
     re.compile(
-        r"(?im)(?:^|(?<=[.!?])\s+|\n)\s*"
-        r"(?:shipped|fixed|verified|resolved|completed|implemented)\s+"
-        r"(?:the|this|that|these|those|all|our|your|its|my)\b[^\n.!?]{0,80}"
+        rf"(?im)(?:^|(?<=[.!?])\s+|\n)\s*{_SUBJECT}"
+        rf"(?:shipped|fixed|verified|resolved|completed|implemented|finished)\s+"
+        rf"(?:the|this|that|these|those|all|our|your|its|my)\b[^\n.!?]{{0,80}}"
     ),
     # "X is/are [already/now/fully] $VERB"
     re.compile(
@@ -467,7 +505,7 @@ def main():
         f"  1. Actually run the verification for THIS claim — the test, the end-to-end\n"
         f"     check, or a first-hand read of the artifact you're claiming about.\n"
         f"  2. Only if it genuinely passed, record the evidence for this specific claim.\n"
-        f"A fresh entry about unrelated work, or from another session, will NOT clear this gate.\n\n"
+        f"New-format entries must match this session and share subject tokens with the claim.\n\n"
         f"Override: CLAIM_CHECK_ENFORCE_MODE=warn or =off"
     )
 

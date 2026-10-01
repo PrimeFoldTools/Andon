@@ -26,7 +26,7 @@ The four-line entries below are the raw material; these are the heuristics they 
 **Defect:** The agent said a change was "complete and tested." It had written the code but never run the tests. I trusted it, moved on, and the gap surfaced hours later.
 **Root cause:** "Done" is the single most expensive word an agent says, and nothing checked it. Polite reminders ("remember to verify") don't survive the moment.
 **Countermeasure:** A Stop hook (`claim_check_hook.py`) that reads the turn-ending message for done-claims and requires a verification log entry before the turn can end. Warn first, block once trusted.
-**Result:** When the detector recognizes a done-claim, the hook makes an unlogged verification gap visible instead of letting it pass silently. It catches forgetting-to-verify, not lying-about-it: the agent still writes its own evidence, and missed claim phrasings remain a known limit (see issue #3).
+**Result:** When the detector recognizes a done-claim, the hook makes an unlogged verification gap visible instead of letting it pass silently. It catches forgetting-to-verify, not lying-about-it: the agent still writes its own evidence, and a done-claim phrased outside the patterns still passes unseen (see the recall entry below).
 
 ### 2026-04 — "That doesn't exist" (it did)
 
@@ -118,3 +118,26 @@ The four-line entries below are the raw material; these are the heuristics they 
 **Root cause:** Freshness was standing in for verification. "A recent entry exists" is not "this claim was verified" — the gate measured the wrong thing, and Goodhart did the rest: the block message even handed back the command that clears it, training "run log_claim" over "run the check."
 **Countermeasure:** Bind the entry to the claim *and* the session. `log_claim.py` stamps the session id (from `CLAUDE_CODE_SESSION_ID`) and a content-token fingerprint of the claim *and* its verification; the gate requires, per claim, a fresh same-session entry whose fingerprint shares a subject token with that claim's sentence (closure verbs and generic dev nouns are stopworded so "done" can't vacuously match "done"). The block message names the verification, not the unblock command. Legacy (pre-binding) entries are honored only until the log has any binding-schema entry, so the upgrade never traps in-flight work but a hand-written legacy line can't reopen it either.
 **Result:** A fresh log entry now only clears a claim it plausibly refers to, from the session that made it. It is a forcing function, not a cryptographic guarantee — token overlap establishes topical correspondence, not proof (an agent that names the subject in its evidence without doing the work still passes, on the record). Reported by an external contributor with reproductions (#2); the three alibis are RED-before / GREEN-after tests.
+
+### 2026-09 — Tightened for precision, lost the recall — then overshot fixing it
+
+**Defect:** The claim detector caught 4 of 13 ordinary done-claims. `Implemented the migration.` fired; `I've implemented the migration.` — how agents actually write — did not. `Task complete!` and `The fix is in place.` passed unseen. Reported with a repro in issue #3.
+**Root cause:** Every false-positive fix had narrowed the patterns and nothing measured what the narrowing cost. Both sentence-start patterns were anchored so any leading subject defeated them.
+**Countermeasure:** Additions that stand on their own — a first-person lead-in (the determiner rule protecting `Fixed income securities…` untouched), the missing standalone verbs, a subject-noun closure form, and state verbs each carrying their own guard. Every accumulated example is a checked-in corpus, and the test that matters asserts the patch is *additive*: nothing the previous detector caught may stop being caught.
+**Result:** 11 of 13 on the reported set, 0 new false fires, 0 regressions. The two still missed are result-claims (`the tests pass`, `CI is green`), left deliberately — see the entry below, which is why.
+
+### 2026-09 — The fix that kept breaking what it was fixing
+
+**Defect:** Catching result-claims (`the tests pass`) needs the detector to know when a clause *asserts* something, so exemptions were added for negation, attribution and conditionals. Each round of review found claims those exemptions had silently suppressed: four, then two, then one. Each fix was correct and produced the next one.
+**Root cause:** Recall was being bought with exemptions, and an exemption is a blanket — it cannot see which claims it covers. Every new one widened the blast radius, so the defect rate per fix stayed roughly constant instead of falling. The reviews were catching instances; nobody was counting the class.
+**Countermeasure:** Drop the feature that needed the exemptions rather than keep tuning them, and replace instance-checking with a property: a corpus-wide test that the patch only ever adds detections. Mutation-checked — reintroduce a broad exemption and it fails.
+**Result:** Result-claims stay undetected, which is a real loss stated plainly rather than a target met. In exchange the regression class is gone by construction, not by vigilance. *An exemption that can suppress a claim you cannot enumerate is a liability priced as a feature.*
+
+### 2026-09 — The rollback that could roll back to itself
+
+**Defect:** A deploy-rehearsal gate proved rollback by rebuilding the previous commit's image, redeploying it by digest against the same database, and checking that it came up with the existing data intact. Caught in design, before the gate's first run: if the previous commit only changed docs, it builds a byte-identical image with the same digest, and the gate "rolls back" by redeploying the exact thing it claims to have rolled back from. Green, and proving nothing.
+**Root cause:** The gate compared two things that could silently become the same thing. Nothing required its two sides to differ, so the pass condition was reachable without the property ever being exercised.
+**Countermeasure:** Stamp every build with the commit it came from (an image revision label), so two commits always produce two digests. The gate asserts *digest A ≠ digest B*, and that each label names its own commit, before it redeploys anything. The label reads like metadata, so it's recorded as load-bearing next to the code: deleting it makes nothing fail loudly; it makes the proof go quietly vacuous.
+**Result:** When its two sides collapse into one, the gate now fails instead of passing. Residual: with a docs-only parent the two images differ only by the label, so the gate proves the redeploy-by-digest mechanism and that data survives the swap, not that older *behavior* came back.
+
+*Contributed by @w-30x (PR #6).*

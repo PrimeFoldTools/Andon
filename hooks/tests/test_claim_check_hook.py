@@ -569,3 +569,83 @@ def test_stale_new_schema_plus_fresh_legacy_does_not_failopen(tmp_path):
     out = _run({"transcript_path": _session_transcript(tmp_path, "The migration is complete.", "sess-A")},
                {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": str(logp)})
     assert out.get("decision") == "block"
+
+
+# ---- PR#4 recall tests (merged in) ----
+
+def test_first_person_lead_in(tmp_path):
+    # Agents write "I've implemented the migration." far more often than
+    # "Implemented the migration."; without the optional lead-in the leading
+    # subject defeated the sentence-start anchor. The determiner requirement is
+    # untouched, which is what keeps the participle-opener cases above exempt.
+    for text in (
+        "I've implemented the retry logic in fetch_page.",
+        "I finished the migration and pushed to main.",
+        "We have fixed the tests.",
+        "I just resolved this ticket.",
+    ):
+        out = _run({"transcript_path": _transcript(tmp_path, text)},
+                   {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": _log_path(tmp_path)})
+        assert out.get("decision") == "block", text
+    # …still requires the determiner, so these stay exempt.
+    for text in (
+        "We have verified users in the table.",
+        "I have finished reading the spec.",
+    ):
+        out = _run({"transcript_path": _transcript(tmp_path, text)},
+                   {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": _log_path(tmp_path)})
+        assert out["continue"] is True, text
+
+
+def test_in_place_and_wired_up(tmp_path):
+    for text in ("The fix is in place.", "Everything is now wired up."):
+        out = _run({"transcript_path": _transcript(tmp_path, text)},
+                   {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": _log_path(tmp_path)})
+        assert out.get("decision") == "block", text
+    # Bare "wired" is deliberately NOT a closure verb.
+    out = _run({"transcript_path": _transcript(tmp_path, "The button is wired to the handler.")},
+               {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": _log_path(tmp_path)})
+    assert out["continue"] is True
+
+
+def test_live_only_counts_when_it_ends_its_clause(tmp_path):
+    # "live" earns its place only in "the change is live [now]". Attributive and
+    # compound uses are ordinary English, so the verb carries its own terminal
+    # guard rather than relying on any exemption elsewhere.
+    for text in ("The change is live.", "The change is live now.", "the change is live"):
+        out = _run({"transcript_path": _transcript(tmp_path, text)},
+                   {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": _log_path(tmp_path)})
+        assert out.get("decision") == "block", text
+    for text in (
+        "This is live data.",
+        "This change is live-streaming to viewers.",
+        "The dashboard is live-updating every second.",
+        "Live migration is supported.",
+    ):
+        out = _run({"transcript_path": _transcript(tmp_path, text)},
+                   {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": _log_path(tmp_path)})
+        assert out["continue"] is True, text
+
+
+def test_standalone_implemented_and_finished(tmp_path):
+    # "implemented" was in the action list but not the standalone one, so a bare
+    # "Implemented." was missed while "Implemented the migration." was caught.
+    for text in ("Implemented. Let me know if you want the tests too.", "Finished."):
+        out = _run({"transcript_path": _transcript(tmp_path, text)},
+                   {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": _log_path(tmp_path)})
+        assert out.get("decision") == "block", text
+
+
+def test_subject_noun_closure(tmp_path):
+    # "Task complete!" / "Migration done." — a bare noun plus a closure verb,
+    # no copula. Anchored to sentence start and limited to CLOSURE_NOUNS so it
+    # cannot reach ordinary prose that happens to contain those words.
+    for text in ("Task complete!", "Migration done.", "The refactor complete."):
+        out = _run({"transcript_path": _transcript(tmp_path, text)},
+                   {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": _log_path(tmp_path)})
+        assert out.get("decision") == "block", text
+    for text in ("Task completion is tracked in the ledger.", "Build artifacts go in dist/."):
+        out = _run({"transcript_path": _transcript(tmp_path, text)},
+                   {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": _log_path(tmp_path)})
+        assert out["continue"] is True, text
+

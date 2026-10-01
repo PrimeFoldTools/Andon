@@ -136,6 +136,6 @@ Already have a `"hooks"` block? Add the `Stop` / `UserPromptSubmit` keys *into* 
 
 ## Tuning false-fires
 
-If it fires on normal sentences, edit `COMPLETION_VERBS` at the top of `claim_check_hook.py` — remove any verb that's common in your everyday writing. The looser verbs (`live`, `functional`, `current`, …) ship **off** in `OPT_IN_VERBS`; add them only if your domain needs them. More in [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+If it fires on normal sentences, edit `COMPLETION_VERBS` at the top of `claim_check_hook.py` — remove any verb that's common in your everyday writing. The looser verbs (`functional`, `current`, `applied`, …) ship **off** in `OPT_IN_VERBS`; add them only if your domain needs them. Result-claims ("the tests pass", "CI is green") are deliberately not matched at all — see the ledger entry on why. More in [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
 > Note: a **Stop** hook blocks with `{"decision": "block"}`. A **PreToolUse** hook uses a *different* schema (`{"hookSpecificOutput": {"permissionDecision": "deny"}}`). If you adapt this skeleton into a PreToolUse guard, switch the schema — the wrong one is a silent no-op.
