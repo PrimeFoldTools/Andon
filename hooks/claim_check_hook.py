@@ -505,7 +505,7 @@ def main():
         f"  1. Actually run the verification for THIS claim — the test, the end-to-end\n"
         f"     check, or a first-hand read of the artifact you're claiming about.\n"
         f"  2. Only if it genuinely passed, record the evidence for this specific claim.\n"
-        f"A fresh entry about unrelated work, or from another session, will NOT clear this gate.\n\n"
+        f"New-format entries must match this session and share subject tokens with the claim.\n\n"
         f"Override: CLAIM_CHECK_ENFORCE_MODE=warn or =off"
     )
 

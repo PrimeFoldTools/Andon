@@ -2,11 +2,11 @@
 
 **Stop fixing the same AI mistake twice.**
 
-A Lean *quality system* for AI-assisted work — every defect becomes a permanent countermeasure. Built by a manufacturing operator, for people who actually ship.
+A Lean *quality system* for AI-assisted work — operators turn recurring defects into countermeasures. Built by a manufacturing operator, for people who actually ship.
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-black.svg) ![Kit: v1](https://img.shields.io/badge/kit-v1-blue.svg) ![Tests](https://github.com/PrimeFoldTools/andon/actions/workflows/tests.yml/badge.svg)
 
-> *Andon* is the cord on a Toyota line you pull to stop production when something's wrong. This is that cord for AI work: catch the defect, fix it once, and make it un-repeatable.
+> *Andon* is the cord on a Toyota line you pull to stop production when something's wrong. This is that cord for AI work: catch the defect, investigate it, and add a countermeasure.
 
 *Not affiliated with [Andon Labs](https://andonlabs.com) (the AI-agent evaluation company). Same Lean word, different project — this is a solo, open-source operating kit.*
 
@@ -21,11 +21,11 @@ If you work inside an AI agent every day, you know the failure modes:
 - It says **"done"** when it isn't.
 - Projects **drift** — two sessions stomp the same file, context evaporates, you re-explain the same thing.
 
-Most "AI tips" make the *output* a little better. None of them stop the *defects from recurring*.
+Most "AI tips" make the *output* a little better. Recurring defects also need explicit checks and follow-through.
 
-**The fix isn't a better prompt. It's an operating discipline — borrowed from a factory floor.** On a Lean line, every defect becomes a permanent countermeasure so it can't happen twice. Andon does that for AI work: each mistake becomes a logged defect → a countermeasure → and where it matters, a mechanical guard the agent can't skip *by accident* — skipping it has to be a deliberate act.
+**The fix isn't a better prompt. It's an operating discipline — borrowed from a factory floor.** Use the same discipline in AI work: record a defect, investigate its cause, and add a countermeasure. Where practical, add a mechanical check and test both the failure and a legitimate passing case. Checks have limits; keep those visible.
 
-The result: **every project gets a little smarter, and stays that way.**
+The aim: **retain what you learned and check whether the countermeasure works.**
 
 ---
 
@@ -55,32 +55,11 @@ That's Layer 1. The payoff shows up the *next* time your agent starts — it rea
 
 ## See it work — the andon cord catching a false "done"
 
-The claim-check hook reads the agent's own "done" and asks for evidence before the turn can end. Below is the **verbatim** `systemMessage` the Stop hook emits when a "done" lands with no fresh verification on record — not a mock-up; you can reproduce it in 30 seconds (next block):
+The claim-check hook detects some completion phrases and checks their verification entries. In block mode, a failed check returns a block decision.
 
-```text
-You:    Add the auth migration.
-Agent:  Done — the migration is complete and the tests are fixed. ✅
+The example below runs the hook in **warn** mode with no verification entry. Its response asks for evidence; it does not establish whether the agent performed the work. Promote to **block** only after checking its behavior on your work. See [HOOK_INSTALL.md](HOOK_INSTALL.md).
 
-⚠️  Claim-check enforcer — done-claim detected without fresh verification log entry.
-Matched phrases:
-  - "is complete"
-  - "are fixed"
-
-Last claim_checks/log.jsonl entry is older than 15min.
-Before stopping this turn:
-  1. Run a real verification (test, end-to-end check, etc.)
-  2. Log it:  python3 log_claim.py "<what you claim>" "<how you verified>"
-  3. Re-reply to the operator
-
-Override: CLAIM_CHECK_ENFORCE_MODE=warn or =off
-
-Agent:  You're right — I hadn't actually run them.
-        Ran the suite: 2 failures. Fixing those first.
-```
-
-That's the claim-check hook (Law 3). The agent self-correcting above is **block** mode — the model receives the `reason` and keeps working instead of stopping. It ships in **warn** mode by default (you get that same message as a nudge, then re-prompt); promote to **block** once you trust it. → [HOOK_INSTALL.md](HOOK_INSTALL.md)
-
-> **Honest about what it is:** the agent writes its own verification entry (via `log_claim.py`), so the hook is a *forcing function + visible audit trail* that makes skipping verification a deliberate act instead of an accident — not a cryptographic guarantee. That's the whole point: turn the most expensive word an agent says ("done") into one it has to earn on the record.
+The agent writes its own verification entry. Token overlap can accept unrelated work or a fabricated entry; the known limits below describe these cases.
 
 ### Reproduce it in 30 seconds
 
@@ -96,7 +75,7 @@ echo '{"transcript_path":"/tmp/t.jsonl"}' \
   | CLAIM_CHECK_ENFORCE_MODE=warn CLAIM_CHECKS_LOG_PATH=/tmp/andon_claim_checks_none.jsonl python3 hooks/claim_check_hook.py
 ```
 
-You get back the exact `systemMessage` shown above. (Or run the suite: `python3 -m pytest hooks/tests/` — they all pass.)
+The response contains `continue: true` and a `systemMessage` asking for claim-specific verification. Run `python3 -m pytest hooks/tests/` to check the hook suite.
 
 *Not ready to install a hook? Layer 1 above — a plain memory file, no code — is the on-ramp. Start there and climb when you feel the friction.*
 
@@ -104,7 +83,7 @@ You get back the exact `systemMessage` shown above. (Or run the suite: `python3 
 
 ## The Defect Ledger — accumulated, not invented
 
-The runnable proof is the 30-second demo above. The part nobody can copy is the *record*: [`DEFECT_LEDGER.md`](DEFECT_LEDGER.md) logs real defects one at a time — **defect → root cause → countermeasure → result** — where the countermeasure is a hook or test that makes the whole class hard to repeat, not a note that asks you to remember. Accumulated, not invented. Read a few entries; you'll recognize your own week.
+The runnable proof is the 30-second demo above. The companion evidence is the *record*: [`DEFECT_LEDGER.md`](DEFECT_LEDGER.md) logs real defects one at a time — **defect → root cause → countermeasure → result** — where the countermeasure is a hook or test that makes the whole class hard to repeat, not a note that asks you to remember. Accumulated, not invented. Read a few entries; you'll recognize your own week.
 
 ---
 
@@ -112,7 +91,7 @@ The runnable proof is the 30-second demo above. The part nobody can copy is the 
 
 Be honest: "give your agent memory + a mistakes log" is a crowded idea in 2026. Some tools even auto-capture your corrections into a rule file (e.g. [claude-reflect](https://github.com/BayramAnnakov/claude-reflect)). If you just want memory, use one of those — they're good.
 
-andon is a different thing: **a complete operating discipline, not a memory tool** — built on the one body of knowledge that already solved "stop defects from recurring" 50 years ago, the Toyota Production System.
+andon is a different thing: **a complete operating discipline, not a memory tool** — informed by the Toyota Production System's practices for investigating defects and testing countermeasures.
 
 - **It's the whole line, not just memory.** Memory + the wrap/orient loop + the claim-check cord + lanes + a starter agent team + the doctrine — one opinionated system with a 5-minute on-ramp.
 - **A defect closes with a *countermeasure*, not a note.** Writing the mistake down isn't the fix — the fix is a hook or test that makes the whole class harder to repeat (*poka-yoke*). That's the factory difference between "we'll try to remember" and "the system catches it next time." The [Defect Ledger](DEFECT_LEDGER.md) is where you see it.
@@ -172,7 +151,7 @@ andon is deliberately small and honest about what it does *not* do:
 - **Correspondence, not proof.** The claim-check hook checks a detected "done" for a *recent, same-session* verification entry whose subject overlaps the claim — not merely that some entry exists. That blocks the specific bypasses previously demonstrated (the self-, unrelated-work, and cross-session repros in issue #2), but it does **not** establish that verification actually happened. The match is topical token overlap: unrelated work that shares a word with the claim can still clear it; a fabricated same-subject entry passes — the agent writes its own log; a subjectless claim ("Done.") falls back to a weaker same-session freshness floor; a log holding only legacy (pre-binding) entries keeps the old freshness-only behavior. It raises the cost of a false "done" from zero to leaving a matching line on the record — a forcing function, not a guarantee.
 - **Detection is intentionally conservative.** The regex catches common closure forms; some real done-claims won't trigger until you tune `COMPLETION_VERBS` to your writing style. It errs toward missing a claim over false-blocking plain English — and it catches the habitual over-claim, not an agent deliberately paraphrasing around a regex it can read.
 - **It's a Stop hook, not a PreToolUse hook.** It checks at turn-end, not before a tool runs.
-- **It's only as good as the `log_claim.py` discipline around it.** No log entry, no signal.
+- **It's only as good as the `log_claim.py` discipline around it.** Missing evidence can trigger a warning or block; an agent-written entry still needs scrutiny.
 - **Start in `warn` mode.** Promote to `block` only after it behaves well on your work.
 
 ---
@@ -200,7 +179,7 @@ The full thinking — 11 laws + 5 patterns + one worked mistake-to-countermeasur
 
 ## Who made this / staying in touch
 
-I came up in manufacturing — 15 years, up to production manager — where the discipline was Lean and Six Sigma: you make a defect impossible to repeat, you don't just fix it. Now I run my own work on a fleet of AI agents, and when the same mistakes kept recurring I ported that discipline to them. This repo is that system, stripped of my private work — it stands on a lot of [other people's tools](docs/stand-on-these-shoulders.md).
+I came up in manufacturing — 15 years, up to production manager — where the discipline was Lean and Six Sigma: you investigate why a defect occurred and put a countermeasure in place. Now I run my own work on a fleet of AI agents, and when the same mistakes kept recurring I ported that discipline to them. This repo is that system, stripped of my private work — it stands on a lot of [other people's tools](docs/stand-on-these-shoulders.md).
 
 If a pattern here saves you a session, I'd like to hear what you stripped, kept, or added — open an issue. More of what I build is at **[github.com/PrimeFoldTools](https://github.com/PrimeFoldTools)**.
 
