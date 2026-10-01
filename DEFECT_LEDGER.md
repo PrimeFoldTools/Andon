@@ -132,3 +132,12 @@ The four-line entries below are the raw material; these are the heuristics they 
 **Root cause:** Recall was being bought with exemptions, and an exemption is a blanket — it cannot see which claims it covers. Every new one widened the blast radius, so the defect rate per fix stayed roughly constant instead of falling. The reviews were catching instances; nobody was counting the class.
 **Countermeasure:** Drop the feature that needed the exemptions rather than keep tuning them, and replace instance-checking with a property: a corpus-wide test that the patch only ever adds detections. Mutation-checked — reintroduce a broad exemption and it fails.
 **Result:** Result-claims stay undetected, which is a real loss stated plainly rather than a target met. In exchange the regression class is gone by construction, not by vigilance. *An exemption that can suppress a claim you cannot enumerate is a liability priced as a feature.*
+
+### 2026-09 — The rollback that could roll back to itself
+
+**Defect:** A deploy-rehearsal gate proved rollback by rebuilding the previous commit's image, redeploying it by digest against the same database, and checking that it came up with the existing data intact. Caught in design, before the gate's first run: if the previous commit only changed docs, it builds a byte-identical image with the same digest, and the gate "rolls back" by redeploying the exact thing it claims to have rolled back from. Green, and proving nothing.
+**Root cause:** The gate compared two things that could silently become the same thing. Nothing required its two sides to differ, so the pass condition was reachable without the property ever being exercised.
+**Countermeasure:** Stamp every build with the commit it came from (an image revision label), so two commits always produce two digests. The gate asserts *digest A ≠ digest B*, and that each label names its own commit, before it redeploys anything. The label reads like metadata, so it's recorded as load-bearing next to the code: deleting it makes nothing fail loudly; it makes the proof go quietly vacuous.
+**Result:** When its two sides collapse into one, the gate now fails instead of passing. Residual: with a docs-only parent the two images differ only by the label, so the gate proves the redeploy-by-digest mechanism and that data survives the swap, not that older *behavior* came back.
+
+*Contributed by @w-30x (PR #6).*
