@@ -391,19 +391,19 @@ def _claim_token_sets(message):
 
 # ---------- FRESH LOG CHECK ----------
 def has_fresh_log(claim_token_sets, session_id, window_min=CLAIM_CHECK_FRESH_MIN):
-    """A turn is cleared only if EVERY claim is covered by a fresh log entry that
-    (a) is within the window, (b) was written in THIS session (kills the cross-session
-    alibi), and (c) whose fingerprint shares >= OVERLAP_MIN_TOKENS content tokens with
-    that claim (kills the self- and unrelated-work alibis). Per-claim, not pooled —
-    verifying one claim cannot launder the others in the same turn.
+    """Match each claim separately against fresh, same-session new-format entries.
 
-    Legacy entries (pre-binding schema) are honored ONLY when the log has no new-schema
-    entries at all (a genuinely un-migrated log), so one hand-written legacy line can't
-    downgrade an upgraded log. Legacy fail-open self-expires within one window.
+    Claims with content tokens require >= OVERLAP_MIN_TOKENS shared tokens.
+    This blocks the recorded unrelated-work and cross-session reproductions;
+    shared vocabulary and fabricated entries can still satisfy correspondence.
 
-    A contentless claim (empty token set — a bare subjectless "Done.") is unbindable and
-    is covered by the same-session freshness floor only. Documented residual limit; still
-    strictly stronger than the global-freshness behavior it replaces."""
+    Legacy entries are honored only when the log has no binding-schema entry.
+    Each legacy entry expires with the freshness window; new legacy entries can
+    continue to qualify until the log contains a binding-schema entry.
+
+    Contentless claims (such as "Done.") require only a fresh same-session entry.
+    Neither fallback establishes that verification occurred.
+    """
     if not CLAIM_CHECKS_LOG.exists():
         return False
     try:
@@ -497,15 +497,17 @@ def main():
     bullets = "\n".join(f'  - "{p}"' for p in claims)
     reason = (
         f"⚠️  Claim-check enforcer — done-claim detected without a fresh verification "
-        f"log entry that refers to THIS claim, from THIS session.\n"
+        f"log entry satisfying the applicable correspondence or fallback rule.\n"
         f"Matched phrases:\n{bullets}\n\n"
-        f"An entry clears this gate only if it is < {CLAIM_CHECK_FRESH_MIN}min old, was written "
-        f"in this session, and its claim references what you're claiming here.\n"
+        f"New-format entries must be within the {CLAIM_CHECK_FRESH_MIN}min freshness window "
+        f"and match this session. Claims with subject tokens also require token overlap.\n"
+        f"Subjectless claims require only same-session freshness. Legacy-only logs use "
+        f"freshness alone until a binding-schema entry exists.\n"
         f"Before stopping this turn:\n"
         f"  1. Actually run the verification for THIS claim — the test, the end-to-end\n"
         f"     check, or a first-hand read of the artifact you're claiming about.\n"
         f"  2. Only if it genuinely passed, record the evidence for this specific claim.\n"
-        f"New-format entries must match this session and share subject tokens with the claim.\n\n"
+        f"These checks do not establish that verification occurred.\n\n"
         f"Override: CLAIM_CHECK_ENFORCE_MODE=warn or =off"
     )
 

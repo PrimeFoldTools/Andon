@@ -649,3 +649,18 @@ def test_subject_noun_closure(tmp_path):
                    {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": _log_path(tmp_path)})
         assert out["continue"] is True, text
 
+
+
+def test_warning_explains_fallbacks_and_subjectless_acceptance(tmp_path):
+    logp = _log_path(tmp_path)
+    transcript = _session_transcript(tmp_path, "Done.", "fallback-test")
+    env = {"CLAIM_CHECK_ENFORCE_MODE": "block", "CLAIM_CHECKS_LOG_PATH": logp}
+    blocked = _run({"transcript_path": transcript}, env)
+    assert blocked["decision"] == "block"
+    reason = blocked["reason"]
+    assert "Subjectless claims require only same-session freshness" in reason
+    assert "Legacy-only logs use freshness alone" in reason
+    assert "do not establish that verification occurred" in reason
+    _log_claim(logp, "fallback-test", "database migration", "ran migration tests")
+    accepted = _run({"transcript_path": transcript}, env)
+    assert accepted["continue"] is True and "decision" not in accepted
