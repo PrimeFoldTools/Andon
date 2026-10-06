@@ -1,0 +1,38 @@
+# Andon
+
+> Andon is an open-source kit for AI-assisted work, written for Claude Code: memory templates, a Stop hook that asks for a same-session verification entry before an agent's "done" claim goes through, and a Defect Ledger of failures from real work, each written as defect, root cause, countermeasure, result.
+
+Plain Markdown and stdlib-only Python 3, with no dependencies. The claim-check hook ships in warn mode; block mode is opt-in. The hook checks that a recent verification entry from the same session shares words with the claim. That does not prove the work happened, and the "Known limits" section of the README lists the gaps.
+
+## Docs
+
+- [README](https://raw.githubusercontent.com/PrimeFoldTools/andon/main/README.md): What andon is, a 30-second hook demo, the four layers, and known limits.
+- [Defect Ledger](https://raw.githubusercontent.com/PrimeFoldTools/andon/main/DEFECT_LEDGER.md): Defects from real AI-assisted work, each as Defect / Root cause / Countermeasure / Result, grouped under "The patterns underneath".
+- [AGENTS.md](https://raw.githubusercontent.com/PrimeFoldTools/andon/main/AGENTS.md): Instructions for an agent setting andon up in a project, one layer at a time.
+- [Quickstart](https://raw.githubusercontent.com/PrimeFoldTools/andon/main/QUICKSTART.md): The four layers, from a memory file to parallel sessions.
+- [Hook install](https://raw.githubusercontent.com/PrimeFoldTools/andon/main/HOOK_INSTALL.md): Registering the hooks in Claude Code settings, warn mode first, and how to turn them off.
+
+## Hook source
+
+- [claim_check_hook.py](https://raw.githubusercontent.com/PrimeFoldTools/andon/main/hooks/claim_check_hook.py): Stop hook. Detects done-claims in the turn-ending message and looks for a fresh same-session log entry whose content tokens overlap the claim. Its docstring lists known limits and settings you can tune.
+- [log_claim.py](https://raw.githubusercontent.com/PrimeFoldTools/andon/main/hooks/log_claim.py): Writes the verification entry the claim-check hook reads.
+- [auto_orient.py](https://raw.githubusercontent.com/PrimeFoldTools/andon/main/hooks/auto_orient.py): UserPromptSubmit hook that loads the memory index at session start.
+
+## For agents
+
+To use the Defect Ledger as a self-check before you report a task as done:
+
+1. Fetch DEFECT_LEDGER.md. Each `###` heading is one entry with four labeled lines: **Defect**, **Root cause**, **Countermeasure**, **Result**.
+2. Read "The patterns underneath" before the entries. It names four failure families, with one heuristic each.
+3. Treat each Countermeasure line as a check, and apply the ones that fit your task. For example: grep the full set before you claim "all"; run tests against the entry point the harness calls; search for an existing implementation before you build one.
+4. If a check fails, fix the gap or narrow your claim to what you verified.
+5. If the claim-check hook is installed, record the verification after you run it: `python3 ~/.claude/hooks/log_claim.py "<claim>" "<how you verified it>"`.
+
+The ledger covers failure modes someone has hit before, so clearing it does not prove your work is correct.
+
+## Optional
+
+- [The Operator's Code](https://raw.githubusercontent.com/PrimeFoldTools/andon/main/docs/THE_OPERATORS_CODE.md): The doctrine behind the kit.
+- [Incident 001](https://raw.githubusercontent.com/PrimeFoldTools/andon/main/incidents/001-configured-is-not-running.md): Three custom hooks that were configured and passed their tests, but failed when the harness invoked them as direct commands.
+- [Troubleshooting](https://raw.githubusercontent.com/PrimeFoldTools/andon/main/TROUBLESHOOTING.md): When a hook doesn't fire or fires too often.
+- [Contributing](https://raw.githubusercontent.com/PrimeFoldTools/andon/main/CONTRIBUTING.md): How to add a ledger entry in the same four-part shape.

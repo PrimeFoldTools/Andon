@@ -177,6 +177,18 @@ The full thinking — 11 laws + 5 patterns + one worked mistake-to-countermeasur
 
 ---
 
+## For AI agents
+
+[`DEFECT_LEDGER.md`](DEFECT_LEDGER.md) logs defects from real AI-assisted work, each written as **Defect**, **Root cause**, **Countermeasure**, **Result**. Before you report a task as done, you can run the Countermeasure lines as checks on your own work:
+
+1. Read the ledger, starting with "The patterns underneath", which sorts the entries into four failure families.
+2. Apply each countermeasure that fits the task. For example, grep the full set before you claim "all", and run tests against the entry point the harness calls.
+3. If a check fails, fix the gap or narrow the claim to what you verified.
+
+The ledger holds failure modes someone has hit before, so a new one won't be in it, and clearing every check does not prove your work is correct. For raw URLs to the key files, see [`llms.txt`](llms.txt). To install andon in a project, follow [`AGENTS.md`](AGENTS.md).
+
+---
+
 ## Who made this / staying in touch
 
 I came up in manufacturing — 15 years, up to production manager — where the discipline was Lean and Six Sigma: you investigate why a defect occurred and put a countermeasure in place. Now I run my own work on a fleet of AI agents, and when the same mistakes kept recurring I ported that discipline to them. This repo is that system, stripped of my private work — it stands on a lot of [other people's tools](docs/stand-on-these-shoulders.md).
