@@ -24,6 +24,14 @@ USAGE
        CLAIM_CHECK_ENFORCE_MODE=warn    # surface a warning, don't block  (DEFAULT)
        CLAIM_CHECK_ENFORCE_MODE=block   # block turn-end until a fresh log entry exists
        CLAIM_CHECK_ENFORCE_MODE=off     # silent pass-through
+  6. Evidence source (opt-in, v0.2; independent of the mode above):
+       CLAIM_CHECK_EVIDENCE=log     # the agent's own log_claim.py line           (DEFAULT)
+       CLAIM_CHECK_EVIDENCE=tool    # a harness-recorded PASSING verification run in the
+                                    # transcript, this session, inside the window
+       CLAIM_CHECK_EVIDENCE=both    # both of the above
+     A non-blank unrecognized value is treated as "both" (strictest), not as "log"; a
+     blank value means "log". In tool/both mode an internal error fails CLOSED.
+     CLAIM_CHECK_VERIFY_COMMANDS="pytest,make test" overrides the allowlist.
 
 NOTE — this is a STOP hook; Stop hooks block with {"decision": "block"}.
 A PreToolUse hook uses a DIFFERENT schema ({"hookSpecificOutput": {"permissionDecision": "deny"}}).
@@ -41,6 +49,16 @@ KNOWN LIMITS (binding is a forcing function, not a cryptographic guarantee):
   - log_claim.py records the session from CLAUDE_CODE_SESSION_ID (set by Claude Code). Under
     a harness that does not set it, entries are session-less and cannot clear a session-bound
     claim — the verification must run in the same session that makes the claim.
+  - CLAIM_CHECK_EVIDENCE=tool reads the transcript, which the agent's own Bash can still
+    append to: forging a passing run is possible — deliberate, and the call that writes it
+    is recorded, though the forging code can hide inside a script that call runs. A
+    recorded run is not bound to the claim's subject (any passing pytest covers "the
+    migration is complete"), it says nothing about whether the tests are meaningful or
+    selected (-k, -run NOMATCH), and it can predate later edits. The allowlist credits a
+    command LINE (the harness-recorded input.command), not the program that ran: a fake
+    `pytest` on PATH, ./pytest, a shell function or (global) alias named pytest passes.
+    Only the Bash tool's record shape is verified; Monitor, MCP tools, PowerShell and
+    subagent (sidechain) runs are not credited. A block holds one turn (stop_hook_active).
   - "**DONE** Want me to deploy?" (a bold marker followed by a question on the same line) is
     exempted as a question — genuinely ambiguous; terminator-ended closures ("Done. Anything
     else?") are treated as completed assertions and DO gate. Plain bullet closers
@@ -461,6 +479,421 @@ def has_fresh_log(claim_token_sets, session_id, window_min=CLAIM_CHECK_FRESH_MIN
     return True
 
 
+# ---------- RECORDED-RUN CHECK (opt-in: CLAIM_CHECK_EVIDENCE=tool|both) ----------
+# The log above is written by the agent whose claim is being gated. The transcript is
+# written by the harness: every Bash call is an assistant "tool_use" block (id, name,
+# input.command) and its outcome is a later user "tool_result" block (tool_use_id,
+# is_error) on an entry stamped with sessionId + timestamp. Field shapes were read off
+# real Claude Code transcripts, not assumed. In tool mode a done-claim needs a recorded,
+# PASSING, allowlisted verification run from THIS session inside the freshness window.
+#
+# The transcript is still a file the agent's own Bash could append to. In @w-30x's words
+# (issue #2) this raises the cost of a fake from "one log line" to "forging harness
+# records": deliberate, done through a tool call the transcript records — though the
+# forging code can hide inside a script that recorded call runs. It is not impossible.
+EVIDENCE_MODES = ("log", "tool", "both")
+SHELL_TOOLS = ("Bash",)  # only the Bash tool's record shape has been verified
+
+# Command-line prefixes that count as verification, compared word-by-word. The first
+# word is compared by basename (".venv/bin/pytest" == "pytest") and every "pythonX.Y"
+# is folded to "python".
+# Override with CLAIM_CHECK_VERIFY_COMMANDS="pytest,make test,npm test" (comma-separated).
+VERIFY_COMMANDS = (
+    "pytest", "python -m pytest", "python -m unittest", "tox", "nox",
+    "npm test", "npm run test", "pnpm test", "yarn test",
+    "cargo test", "go test", "make test", "make check", "ctest",
+    "ruff check", "mypy", "flake8", "tsc", "eslint",
+)
+
+# A tool_result with is_error == False is NOT always a finished, passing run. Real
+# transcripts show three ways a run reports success without having succeeded:
+#   - backgroundTaskId (with or without run_in_background on the input): the call
+#     returned at once ("Command running in background"), incl. auto-backgrounding
+#   - timedOutAfterMs: a run that hit the tool timeout is "moved to the background"
+#     with is_error false — a hung test suite looks green
+#   - returnCodeInterpretation: a nonzero exit reinterpreted as non-error ("No matches found")
+# Any of these markers means the exit status is not the command's own -> not credited.
+_UNTRUSTED_RESULT_KEYS = ("backgroundTaskId", "timedOutAfterMs", "returnCodeInterpretation")
+
+# ---- the creditable command-line grammar ----
+# Instead of parsing arbitrary shell and hunting for dangerous separators (shlex and the
+# shell disagree in too many places for that to converge), a command line is credited
+# ONLY if it matches this small grammar exactly:
+#
+#   [set -o pipefail ; | &&]  [cd WORD &&]  [NAME=WORD ...]  VERIFY [ARG ...] [REDIR ...]
+#       [| FILTER [ARG ...] ...]          # pipes only when the line starts with set -o pipefail
+#       [&& WORD [WORD ...] [REDIR ...] ...]
+#
+#   WORD   = unquoted [A-Za-z0-9_-./:=,@%+~*?[]] and/or '...' (anything but ' and newlines)
+#            and/or "..." (no $ ` \ ! inside)
+#   REDIR  = 2>&1 | > WORD | >> WORD | >| WORD | 2> WORD | 2>> WORD
+#   FILTER = tail | head | grep | cat
+#
+# Every other character or operator — '#', '$', '(', ')', '{', '}', '<', '\', backtick,
+# '!', '||', a lone '&', '|&', ';' anywhere but right after the leading set, a newline
+# or carriage return, any non-ASCII byte outside quotes — makes the line uncreditable.
+# Refusal only withholds credit from an honest run; it never grants credit.
+_UNQUOTED_OK = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-./:=,@%+~*?[]")
+_DQ_FORBIDDEN = frozenset('$`\\!')
+_FILTERS = ("tail", "head", "grep", "cat")
+_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_PYTHON = re.compile(r"^python(?:\d+(?:\.\d+)*)?$")
+_SET_OPT = re.compile(r"^-[eux]*o$")
+# Leading VAR=value assignments that change the shell, the loader, or the verifier's own
+# options (PYTEST_ADDOPTS=--co, MAKEFLAGS=-i, GOFLAGS=-run=X, npm_config_if_present=true).
+_DENY_ASSIGN = frozenset((
+    "PATH", "BASH_ENV", "ENV", "IFS", "ZDOTDIR", "SHELLOPTS", "BASHOPTS", "PS4",
+    "PROMPT_COMMAND", "CDPATH", "PYTEST_ADDOPTS", "PYTEST_PLUGINS", "PYTHONSTARTUP",
+    "NODE_OPTIONS", "MAKEFLAGS", "MFLAGS", "GNUMAKEFLAGS", "GOFLAGS", "SHELL",
+))
+_DENY_ASSIGN_PREFIX = ("LD_", "DYLD_", "NPM_CONFIG_", "TOX_", "NOX_", "RUFF_", "CARGO_",
+                       "RUSTC_")
+
+# Flags that make a verifier exit 0 without running, or mask its status. Checked on
+# every word after the verify command (incl. words forwarded after "--").
+_GENERIC_LONG = frozenset((
+    "--version", "--help", "--dry-run", "--exit-zero", "--if-present", "--ignore-scripts",
+    "--ignore-errors", "--no-run", "--list", "--collect-only", "--co",
+    "--suppress-tests-failed-exit-code", "--suppress-no-test-exit-code",
+    "--passWithNoTests", "--listTests", "--showConfig", "--watch",
+))
+_PYTEST_LONG = frozenset((
+    "--version", "--help", "--collect-only", "--co", "--fixtures", "--fixtures-per-test",
+    "--markers", "--setup-only", "--setup-plan", "--suppress-tests-failed-exit-code",
+    "--suppress-no-test-exit-code", "--last-failed-no-failures", "--lfnf",
+    "--override-ini", "--config-file",
+    # pytest's own alias spellings of the above
+    "--collectonly", "--setuponly", "--setupplan", "--funcargs", "--cache-show",
+))
+# tool -> (banned long flags, banned single-dash letters, argparse abbreviations?)
+_TOOL_RULES = {
+    "pytest": (_PYTEST_LONG, "hVoc", True),
+    "unittest": (frozenset(("--help",)), "h", True),
+    "tox": (_PYTEST_LONG | {"--notest", "--showconfig", "--listenvs", "--listenvs-all",
+                            "--skip-missing-interpreters", "--help-ini", "--devenv",
+                            "--skip-env"},
+            "hlacn", True),
+    "nox": (_PYTEST_LONG | {"--list", "--list-sessions", "--json"}, "hl", True),
+    "npm": (_GENERIC_LONG | _PYTEST_LONG | {"--script-shell", "--usage"}, "h", False),
+    "cargo": (frozenset(("--no-run", "--help", "--version", "--list")), "hV", False),
+    "make": (frozenset(("--ignore-errors", "--dry-run", "--just-print", "--recon",
+                        "--question", "--touch", "--print-data-base", "--help",
+                        "--version", "--file", "--makefile")), "inqtpvhf", True),
+    "ctest": (frozenset(("--show-only", "--version", "--help", "--no-tests", "--print-labels",
+                         "--help-full")), "Nh", False),
+    "ruff": (frozenset(("--exit-zero", "--help", "--version", "--show-files",
+                        "--show-settings", "--watch")), "ehV", False),
+    "mypy": (frozenset(("--version", "--help")), "Vh", True),
+    "flake8": (frozenset(("--exit-zero", "--version", "--help", "--bug-report")), "h", True),
+    "tsc": (frozenset(("--version", "--help", "--init", "--showconfig", "--listfilesonly",
+                       "--watch", "--all", "--nocheck", "--clean", "--dry")), "vhw", False),
+    "eslint": (frozenset(("--version", "--help", "--print-config", "--init", "--env-info",
+                          "--no-error-on-unmatched-pattern", "--stdin",
+                          "--no-config-lookup")), "vh", False),
+}
+# go's flag package spells long flags with one dash; these compile, list or wrap
+# without running the tests.
+_GO_BANNED = frozenset(("-c", "-n", "-list", "-exec", "-toolexec", "-help", "-h"))
+_TOX_SUBCOMMANDS = frozenset(("list", "l", "config", "c", "depends", "de", "quickstart", "q",
+                              "devenv", "d", "exec", "e", "schema", "legacy", "le"))
+
+
+def _evidence_mode():
+    raw = os.environ.get("CLAIM_CHECK_EVIDENCE", "").strip().lower()
+    if not raw:
+        return "log"  # unset or blank: unchanged pre-v0.2 behavior
+    # A set, non-blank but unrecognized value ("tools", "on") falls to the STRICTEST
+    # mode rather than silently to the weakest — the resulting warnings surface the typo.
+    return raw if raw in EVIDENCE_MODES else "both"
+
+
+def _norm_cmd_token(tok):
+    base = tok.rsplit("/", 1)[-1]
+    return "python" if _PYTHON.match(base) else base
+
+
+def _verify_prefixes():
+    raw = os.environ.get("CLAIM_CHECK_VERIFY_COMMANDS")
+    entries = raw.split(",") if raw is not None else VERIFY_COMMANDS
+    out = []
+    for e in entries:
+        toks = e.split()
+        if toks:
+            out.append([_norm_cmd_token(toks[0])] + toks[1:])
+    return out
+
+
+def _lex(command):
+    """Tokenize a command line into [("w", word) | ("op", op)], or None if it uses
+    anything outside the grammar. Quotes are resolved the way the shell resolves them
+    (adjacent quoted and unquoted parts form ONE word), so `echo a"; pytest -q b"` is
+    the two words `echo` and `a; pytest -q b`."""
+    if not isinstance(command, str):
+        return None
+    s = command.rstrip("\n").strip(" \t")
+    if not s or "\n" in s or "\r" in s:
+        return None
+    out, cur, have, i, n = [], [], False, 0, len(s)
+
+    def flush():
+        nonlocal cur, have
+        if have:
+            out.append(("w", "".join(cur)))
+        cur, have = [], False
+
+    while i < n:
+        c = s[i]
+        if c in " \t":
+            flush()
+            i += 1
+        elif c == "'":
+            j = s.find("'", i + 1)
+            if j < 0:
+                return None
+            cur.append(s[i + 1:j])
+            have, i = True, j + 1
+        elif c == '"':
+            j = s.find('"', i + 1)
+            if j < 0 or any(ch in _DQ_FORBIDDEN for ch in s[i + 1:j]):
+                return None
+            cur.append(s[i + 1:j])
+            have, i = True, j + 1
+        elif c == "&":
+            if s[i:i + 2] != "&&":
+                return None  # lone & backgrounds; &> / &| / &! are not in the grammar
+            flush()
+            out.append(("op", "&&"))
+            i += 2
+        elif c == "|":
+            if s[i + 1:i + 2] in ("|", "&"):
+                return None  # || masks failure; |& is not in the grammar
+            flush()
+            out.append(("op", "|"))
+            i += 1
+        elif c == ";":
+            if s[i + 1:i + 2] in (";", "&", "|"):
+                return None
+            flush()
+            out.append(("op", ";"))
+            i += 1
+        elif c == ">":
+            fd = ""
+            if have:
+                if "".join(cur) != "2" or s[i - 1] != "2":
+                    return None  # only a bare unquoted "2" may prefix a redirect
+                fd, cur, have = "2", [], False
+            if s.startswith(">&1", i) and (i + 3 == n or s[i + 3] in " \t|"):
+                if fd != "2":
+                    return None
+                out.append(("op", "2>&1"))
+                i += 3
+            elif s[i:i + 2] == ">>":
+                out.append(("op", fd + ">>"))
+                i += 2
+            elif s[i:i + 2] == ">|":
+                if fd:
+                    return None
+                out.append(("op", ">|"))
+                i += 2
+            elif s[i:i + 2] == ">&":
+                return None
+            else:
+                out.append(("op", fd + ">"))
+                i += 1
+        elif c in _UNQUOTED_OK:
+            cur.append(c)
+            have = True
+            i += 1
+        else:
+            return None  # # $ ( ) { } < \ ` ! non-ASCII control ...
+    flush()
+    return out
+
+
+def _tool_key(prefix):
+    if prefix[0] == "python" and len(prefix) >= 3:
+        return prefix[2]
+    if prefix[0] in ("npm", "pnpm", "yarn"):
+        return "npm"
+    return prefix[0]
+
+
+def _flag_banned(word, long_banned, letters, abbrev, fold=False):
+    if word.startswith("--") and len(word) > 2:
+        name = word.split("=", 1)[0]
+        if (name.lower() if fold else name) in long_banned:
+            return True
+        # argparse tools accept unambiguous prefixes: --coll == --collect-only
+        return abbrev and len(name) >= 3 and any(b.startswith(name) for b in long_banned)
+    m = re.match(r"-([A-Za-z]+)", word)
+    if m and not word.startswith("--"):
+        # the whole leading letter run, so an attached value (-oaddopts=--co) is checked
+        return any(ch in letters for ch in m.group(1))
+    return False
+
+
+def _args_ok(prefix, args):
+    key = _tool_key(prefix)
+    if key == "go":
+        return not any(a.split("=", 1)[0] in _GO_BANNED
+                       or a.split("=", 1)[0][1:] in _GO_BANNED for a in args)
+    long_banned, letters, abbrev = _TOOL_RULES.get(key, (_GENERIC_LONG, "h", False))
+    for a in args:
+        if _flag_banned(a, long_banned, letters, abbrev, fold=(key == "tsc")):  # tsc: case-insensitive
+            return False
+        if key == "tox" and a in _TOX_SUBCOMMANDS:
+            return False
+        if key == "make" and _ASSIGNMENT.match(a):
+            return False  # NAME=value overrides (SHELL=true, MAKEFLAGS=-n) can skip recipes
+    return True
+
+
+def _simple(toks, k):
+    """Consume words and redirections from toks[k:] up to the next | ; or &&.
+    Returns (words, next_index) or None on a malformed redirection."""
+    words = []
+    while k < len(toks):
+        kind, val = toks[k]
+        if kind == "w":
+            words.append(val)
+            k += 1
+        elif val == "2>&1":
+            k += 1
+        elif val in (">", ">>", ">|", "2>", "2>>"):
+            if k + 1 >= len(toks) or toks[k + 1][0] != "w" or not words:
+                return None
+            k += 2
+        else:
+            break
+    return words, k
+
+
+def _is_verification_command(command, prefixes):
+    """True only when `command` matches the creditable grammar (see above) — i.e. the
+    exit status the harness records for the whole call IS the verification's status."""
+    toks = _lex(command)
+    if not toks:
+        return False
+    k, pipefail = 0, False
+    w = [v for kind, v in toks[:3] if kind == "w"]
+    if (len(toks) > 3 and len(w) == 3 and toks[0][0] == toks[1][0] == toks[2][0] == "w"
+            and w[0] == "set" and _SET_OPT.match(w[1]) and w[2] == "pipefail"
+            and toks[3] in (("op", ";"), ("op", "&&"))):
+        pipefail, k = True, 4
+    if (len(toks) > k + 2 and toks[k] == ("w", "cd") and toks[k + 1][0] == "w"
+            and not toks[k + 1][1].startswith("-") and toks[k + 2] == ("op", "&&")):
+        k += 3
+    seg = _simple(toks, k)
+    if seg is None:
+        return False
+    words, k = seg
+    while words and _ASSIGNMENT.match(words[0]):
+        name = words[0].split("=", 1)[0].upper()
+        if name in _DENY_ASSIGN or name.startswith(_DENY_ASSIGN_PREFIX):
+            return False
+        words = words[1:]
+    if not words:
+        return False
+    words = [_norm_cmd_token(words[0])] + words[1:]
+    prefix = next((p for p in prefixes if words[:len(p)] == p), None)
+    if prefix is None or not _args_ok(prefix, words[len(prefix):]):
+        return False
+    # Optional filters, only under pipefail (a pipe otherwise reports the LAST stage).
+    while k < len(toks) and toks[k] == ("op", "|"):
+        if not pipefail:
+            return False
+        seg = _simple(toks, k + 1)
+        if seg is None or not seg[0] or seg[0][0] not in _FILTERS:
+            return False
+        words, k = seg
+    # Optional && tails: they run only after everything before them succeeded, so a
+    # zero status for the whole line still implies the verification passed.
+    while k < len(toks) and toks[k] == ("op", "&&"):
+        seg = _simple(toks, k + 1)
+        if seg is None or not seg[0]:
+            return False
+        k = seg[1]
+    return k == len(toks)
+
+
+def _is_id(x):
+    return isinstance(x, str) and bool(x)  # a missing/None/list id must never pair
+
+
+def _scan_entry(entry, session_id, prefixes, uses, cutoff, now_ts):
+    """One transcript entry. Records creditable tool_use ids into `uses`; returns True
+    when a tool_result completes one of them as a fresh, finished success."""
+    if not isinstance(entry, dict) or entry.get("isSidechain"):
+        return False
+    if entry.get("sessionId") != session_id:
+        return False  # another session's run (e.g. resumed history) cannot alibi this one
+    msg = entry.get("message")
+    content = msg.get("content") if isinstance(msg, dict) else None
+    if not isinstance(content, list):
+        return False
+    etype = entry.get("type")
+    for b in content:
+        if not isinstance(b, dict):
+            continue
+        if etype == "assistant" and b.get("type") == "tool_use":
+            if b.get("name") not in SHELL_TOOLS:
+                continue
+            bid, inp = b.get("id"), b.get("input")
+            if not _is_id(bid) or not isinstance(inp, dict):
+                continue
+            if inp.get("run_in_background"):
+                continue
+            if _is_verification_command(inp.get("command"), prefixes):
+                uses[bid] = inp["command"]
+        elif etype == "user" and b.get("type") == "tool_result":
+            tid = b.get("tool_use_id")
+            if not _is_id(tid) or tid not in uses:
+                continue
+            if b.get("is_error") is not False:
+                continue  # nonzero exit, or no explicit success flag
+            tur = entry.get("toolUseResult")
+            if not isinstance(tur, dict) or tur.get("interrupted") is not False:
+                continue
+            if any(k in tur for k in _UNTRUSTED_RESULT_KEYS):
+                continue
+            ts_raw = entry.get("timestamp")
+            if not isinstance(ts_raw, str):
+                continue
+            try:
+                ts = _parse_ts_as_utc(ts_raw)
+            except (ValueError, TypeError, AttributeError, OverflowError):
+                continue
+            if cutoff <= ts <= now_ts + 60:  # +60s clock-skew slack, no further
+                return True
+    return False
+
+
+def has_recorded_run(transcript_path, session_id, window_min=CLAIM_CHECK_FRESH_MIN):
+    """True if the harness-written transcript holds a PASSING allowlisted verification
+    run from this session, finished inside the freshness window. Fails closed: anything
+    missing, malformed, cross-session, sidechain, stale, future-dated, errored,
+    interrupted, backgrounded, timed-out or reinterpreted is not credited."""
+    if not session_id or not isinstance(session_id, str):
+        return False
+    p = Path(transcript_path).expanduser()
+    try:
+        lines = p.read_text(errors="ignore").splitlines()
+    except OSError:
+        return False
+    prefixes = _verify_prefixes()
+    now_ts = datetime.now(timezone.utc).timestamp()
+    cutoff = now_ts - (window_min * 60)
+    uses = {}  # tool_use id -> command, for main-thread verification calls in this session
+    for line in lines:
+        try:
+            if _scan_entry(json.loads(line), session_id, prefixes, uses, cutoff, now_ts):
+                return True
+        except Exception:  # one malformed line must not decide the gate either way
+            continue
+    return False
+
+
 # ---------- MAIN ----------
 def main():
     mode = os.environ.get("CLAIM_CHECK_ENFORCE_MODE", DEFAULT_MODE).lower()
@@ -490,11 +923,40 @@ def main():
     # Prefer the session id the harness passes on stdin; fall back to the transcript
     # filename stem (verified to equal CLAUDE_CODE_SESSION_ID, which log_claim.py stamps).
     session_id = hook_data.get("session_id") or Path(transcript_path).stem
-    claim_token_sets = _claim_token_sets(message)
-    if has_fresh_log(claim_token_sets, session_id):
+    evidence = _evidence_mode()
+    log_ok = run_ok = True
+    if evidence in ("log", "both"):
+        log_ok = has_fresh_log(_claim_token_sets(message), session_id)
+    if evidence in ("tool", "both"):
+        run_ok = has_recorded_run(transcript_path, session_id)
+    if log_ok and run_ok:
         emit_ok()
 
     bullets = "\n".join(f'  - "{p}"' for p in claims)
+    if evidence != "log" and not run_ok:
+        allow = ", ".join(" ".join(p) for p in _verify_prefixes()) or "(empty allowlist)"
+        reason = (
+            f"⚠️  Claim-check enforcer (CLAIM_CHECK_EVIDENCE={evidence}) — done-claim "
+            f"detected, but the transcript holds no passing verification run from this "
+            f"session in the last {CLAIM_CHECK_FRESH_MIN}min.\n"
+            f"Matched phrases:\n{bullets}\n\n"
+            f"A run counts only if the harness recorded it: a foreground Bash call that "
+            f"finished with a non-error result, whose command line is an allowlisted "
+            f"verification ({allow}) in the accepted shape: optionally "
+            f"`set -o pipefail;` first, `cd DIR &&`, VAR=value; then the command and its "
+            f"arguments; `| tail/head/grep/cat` only after pipefail; `&& more` after. "
+            f"No `;`, `||`, `&`, `$`, `#`, newlines, or flags like --version/--co/--exit-zero.\n"
+            f"A log_claim.py entry alone does not satisfy this mode.\n"
+            f"Before stopping this turn, run the verification THIS claim rests on and "
+            f"report its actual result, or narrow the claim to what you verified.\n"
+            + ("A matching log_claim.py entry is also required (both mode).\n"
+               if evidence == "both" and not log_ok else "")
+            + f"\nOverride: CLAIM_CHECK_ENFORCE_MODE=warn or =off"
+        )
+        if mode == "warn":
+            emit_warn(reason)
+        emit_block(reason)
+
     reason = (
         f"⚠️  Claim-check enforcer — done-claim detected without a fresh verification "
         f"log entry satisfying the applicable correspondence or fallback rule.\n"
@@ -520,5 +982,17 @@ if __name__ == "__main__":
     try:
         main()
     except Exception:
-        # True fail-safe: an unexpected error must NEVER break the operator's turn.
-        emit_ok()
+        # Default (log) evidence: an unexpected error must NEVER break the operator's turn.
+        # In tool/both mode the operator asked for a stricter gate, so an error FAILS
+        # CLOSED instead (warn in warn mode, block in block mode) — a crash must not be a
+        # way to clear a done-claim.
+        _ev = _evidence_mode()
+        _md = os.environ.get("CLAIM_CHECK_ENFORCE_MODE", DEFAULT_MODE).lower()
+        if _ev == "log" or _md == "off":
+            emit_ok()
+        _reason = (f"⚠️  Claim-check enforcer (CLAIM_CHECK_EVIDENCE={_ev}) hit an internal "
+                   f"error and could not confirm a recorded verification run; failing "
+                   f"closed.\nOverride: CLAIM_CHECK_ENFORCE_MODE=warn or =off")
+        if _md == "warn":
+            emit_warn(_reason)
+        emit_block(_reason)

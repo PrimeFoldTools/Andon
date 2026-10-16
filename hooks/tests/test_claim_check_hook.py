@@ -32,10 +32,10 @@ def _transcript(tmp_path, text):
 
 
 def _clean_env(extra=None):
-    env = dict(os.environ)
-    env.pop("CLAIM_CHECK_ENFORCE_MODE", None)
-    env.pop("CLAIM_CHECKS_LOG_PATH", None)
-    env.pop("CLAUDE_CODE_SESSION_ID", None)  # hermetic: never inherit the runner's session
+    # Hermetic: never inherit the runner's CLAIM_CHECK_* knobs (incl. CLAIM_CHECK_EVIDENCE /
+    # CLAIM_CHECK_VERIFY_COMMANDS) or its session id.
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith("CLAIM_CHECK") and k != "CLAUDE_CODE_SESSION_ID"}
     if extra:
         env.update(extra)
     return env
