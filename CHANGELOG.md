@@ -6,6 +6,24 @@ of the doctrine in [`docs/THE_OPERATORS_CODE.md`](docs/THE_OPERATORS_CODE.md).
 
 ## Unreleased
 
+- **claim-check: opt-in harness-recorded evidence** (`CLAIM_CHECK_EVIDENCE=tool|both`; default
+  unchanged). In `tool` mode a done-claim is cleared only by a passing, allowlisted verification run
+  (`pytest`, `make test`, …) that Claude Code recorded in this session's transcript inside the
+  freshness window — not by the agent's own `log_claim.py` line. A run counts only if its command
+  line matches a small fixed grammar whose exit status is the verification's own (HOOK_INSTALL §6);
+  everything else, including `| tail` without `pipefail`, `|| true` and `; echo $?`, is refused.
+  Runs from another session or a subagent, and failed, interrupted, backgrounded or timed-out runs,
+  are not credited. In `tool`/`both` mode an internal hook error fails closed. The transcript is
+  still agent-writable; see README *Known limits*. Credit: @w-30x on #2 argued that no content check
+  can separate an honest entry from a self-alibi (the lever is the channel), proposed requiring an
+  allowlisted run recorded for *this* session inside the window, and named the residual ("one log
+  line" → forging harness records). The Assay-generated review @jojig-dao shared on #1 (§2)
+  proposed checking claims against a harness-written tool-use log. Both proposed a separate
+  PostToolUse recorder; neither the recorder nor a log entry that cites a run is built — this reads
+  the transcript instead, and `both` checks the run and the log separately. Reading harness-recorded
+  tool calls from the transcript follows the idea in @alex-spataru's Serial-Studio adaptation of this
+  hook (`.claude/hooks/claim-check.py`, itself adapted from andon); andon reuses the idea, not the
+  code. `scripts/mutation_check_tool_evidence.py` breaks each guard and checks a test fails.
 - **claim-check:** better recall on ordinary done-claims (issue #3), as a strictly
   additive change. Sentence-start forms accept a first-person lead-in (`I've implemented
   the…`); `implemented` and `finished` join the standalone list; `in place` and `wired up`
