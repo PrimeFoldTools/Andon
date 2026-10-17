@@ -201,6 +201,16 @@ def emit_block(reason):
 
 
 # ---------- TRANSCRIPT READING (with recency guard) ----------
+class TranscriptUnavailable(Exception):
+    """The transcript exists but could not be read. In tool/both mode this is not
+    "no claim": main() turns it into a fail-closed verdict."""
+
+
+def _unreadable(exc):
+    if _evidence_mode() != "log":
+        raise TranscriptUnavailable(exc.__class__.__name__)
+
+
 def _parse_ts_as_utc(ts_str):
     dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
     if dt.tzinfo is None:
@@ -216,7 +226,8 @@ def read_last_assistant_message(transcript_path):
         return ""
     try:
         lines = p.read_text(errors="ignore").splitlines()
-    except OSError:
+    except OSError as e:
+        _unreadable(e)
         return ""
     now_ts = datetime.now(timezone.utc).timestamp()
     for line in reversed(lines):
@@ -524,7 +535,9 @@ _UNTRUSTED_RESULT_KEYS = ("backgroundTaskId", "timedOutAfterMs", "returnCodeInte
 #       [| FILTER [ARG ...] ...]          # pipes only when the line starts with set -o pipefail
 #       [&& WORD [WORD ...] [REDIR ...] ...]
 #
-#   WORD   = unquoted [A-Za-z0-9_-./:=,@%+~*?[]] and/or '...' (anything but ' and newlines)
+#   WORD   = unquoted [A-Za-z0-9_-./:=,@%+~] and/or '...' (anything but ' and newlines)
+#            (glob characters * ? [ count only inside quotes: unquoted, the shell may
+#            expand them into a file named like a banned flag)
 #            and/or "..." (no $ ` \ ! inside)
 #   REDIR  = 2>&1 | > WORD | >> WORD | >| WORD | 2> WORD | 2>> WORD
 #   FILTER = tail | head | grep | cat
@@ -545,7 +558,7 @@ _SET_OPT = re.compile(r"^-[eux]*o$")
 _DENY_ASSIGN = frozenset((
     "PATH", "BASH_ENV", "ENV", "IFS", "ZDOTDIR", "SHELLOPTS", "BASHOPTS", "PS4",
     "PROMPT_COMMAND", "CDPATH", "PYTEST_ADDOPTS", "PYTEST_PLUGINS", "PYTHONSTARTUP",
-    "NODE_OPTIONS", "MAKEFLAGS", "MFLAGS", "GNUMAKEFLAGS", "GOFLAGS", "SHELL",
+    "NODE_OPTIONS", "MAKEFLAGS", "MFLAGS", "GNUMAKEFLAGS", "MAKEFILES", "GOFLAGS", "SHELL",
 ))
 _DENY_ASSIGN_PREFIX = ("LD_", "DYLD_", "NPM_CONFIG_", "TOX_", "NOX_", "RUFF_", "CARGO_",
                        "RUSTC_")
@@ -579,7 +592,13 @@ _TOOL_RULES = {
     "cargo": (frozenset(("--no-run", "--help", "--version", "--list")), "hV", False),
     "make": (frozenset(("--ignore-errors", "--dry-run", "--just-print", "--recon",
                         "--question", "--touch", "--print-data-base", "--help",
-                        "--version", "--file", "--makefile")), "inqtpvhf", True),
+                        "--version", "--file", "--makefile",
+                        # treat the target as up to date (recipe never runs, exit 0),
+                        # or inject a recipe from the command line
+                        "--old-file", "--assume-old", "--new-file", "--assume-new",
+                        "--what-if", "--eval",
+                        # let an allowed VAR=value in the environment replace a recipe variable
+                        "--environment-overrides")), "inqtpvhfoWEe", True),
     "ctest": (frozenset(("--show-only", "--version", "--help", "--no-tests", "--print-labels",
                          "--help-full")), "Nh", False),
     "ruff": (frozenset(("--exit-zero", "--help", "--version", "--show-files",
@@ -702,6 +721,11 @@ def _lex(command):
                 out.append(("op", fd + ">"))
                 i += 1
         elif c in _UNQUOTED_OK:
+            if c in "*?[":
+                # an unquoted glob is expanded by the shell before the verifier sees it;
+                # a file named --collect-only turns `pytest --co*` or `pytest *` into a
+                # no-run flag. Quote globs ('tests/test_*.py') to keep them creditable.
+                return None
             cur.append(c)
             have = True
             i += 1
@@ -744,8 +768,10 @@ def _args_ok(prefix, args):
             return False
         if key == "tox" and a in _TOX_SUBCOMMANDS:
             return False
-        if key == "make" and _ASSIGNMENT.match(a):
-            return False  # NAME=value overrides (SHELL=true, MAKEFLAGS=-n) can skip recipes
+        if key == "make" and not a.startswith("-") and "=" in a:
+            # make reads EVERY non-flag word with "=" as a variable assignment, in any
+            # spelling (=, :=, ::=, +=, ?=, !=, .SHELLFLAGS=-nc): SHELL:=true skips recipes
+            return False
     return True
 
 
@@ -879,7 +905,8 @@ def has_recorded_run(transcript_path, session_id, window_min=CLAIM_CHECK_FRESH_M
     p = Path(transcript_path).expanduser()
     try:
         lines = p.read_text(errors="ignore").splitlines()
-    except OSError:
+    except OSError as e:
+        _unreadable(e)
         return False
     prefixes = _verify_prefixes()
     now_ts = datetime.now(timezone.utc).timestamp()
@@ -895,6 +922,22 @@ def has_recorded_run(transcript_path, session_id, window_min=CLAIM_CHECK_FRESH_M
 
 
 # ---------- MAIN ----------
+def _unavailable(mode, what, soft=False):
+    """Evidence cannot be examined (bad stdin, no transcript, unreadable transcript).
+    Default (log) evidence keeps the old behavior and lets the turn through. In tool/both
+    mode the operator asked for a stricter gate: missing evidence is not passing evidence,
+    so this fails closed (warn in warn mode, block otherwise)."""
+    evidence = _evidence_mode()
+    if evidence == "log" or mode == "off":
+        emit_ok()
+    reason = (f"⚠️  Claim-check enforcer (CLAIM_CHECK_EVIDENCE={evidence}) could not examine "
+              f"the session transcript: {what}. A recorded verification run cannot be "
+              f"confirmed, so this fails closed.\nOverride: CLAIM_CHECK_ENFORCE_MODE=warn or =off")
+    if mode == "warn" or soft:
+        emit_warn(reason)  # soft: stop_hook_active is unreadable, so a block could loop
+    emit_block(reason)
+
+
 def main():
     mode = os.environ.get("CLAIM_CHECK_ENFORCE_MODE", DEFAULT_MODE).lower()
     if mode == "off":
@@ -903,16 +946,22 @@ def main():
     try:
         hook_data = json.loads(sys.stdin.read() or "{}")
     except json.JSONDecodeError:
-        emit_ok()
+        _unavailable(mode, "the hook input was not valid JSON", soft=True)
 
     if hook_data.get("stop_hook_active") is True:
         emit_ok()  # prevent re-block loop
 
     transcript_path = hook_data.get("transcript_path")
     if not transcript_path:
-        emit_ok()
+        _unavailable(mode, "the hook input named no transcript")
 
-    message = read_last_assistant_message(transcript_path)
+    if not Path(transcript_path).expanduser().exists():
+        _unavailable(mode, f"the transcript does not exist: {transcript_path}")
+
+    try:
+        message = read_last_assistant_message(transcript_path)
+    except TranscriptUnavailable as e:
+        _unavailable(mode, f"the transcript could not be read: {e}")
     if not message:
         emit_ok()
 
@@ -928,7 +977,10 @@ def main():
     if evidence in ("log", "both"):
         log_ok = has_fresh_log(_claim_token_sets(message), session_id)
     if evidence in ("tool", "both"):
-        run_ok = has_recorded_run(transcript_path, session_id)
+        try:
+            run_ok = has_recorded_run(transcript_path, session_id)
+        except TranscriptUnavailable as e:
+            _unavailable(mode, f"the transcript could not be read: {e}")
     if log_ok and run_ok:
         emit_ok()
 

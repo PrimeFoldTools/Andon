@@ -27,6 +27,25 @@ _ENV = {k: v for k, v in os.environ.items()
 
 # (name, exact source text, replacement) — each source text must occur exactly once.
 MUTATIONS = (
+    # --- cross-model review 2026-10-16 ---
+    ("make --old-file allowed", '"--old-file", "--assume-old", "--new-file", "--assume-new",',
+     '"--assume-old", "--new-file", "--assume-new",'),
+    ("make -o/-W/-E letters allowed", '"inqtpvhfoWEe"', '"inqtpvhfe"'),
+    ("make -e letter allowed", '"inqtpvhfoWEe"', '"inqtpvhfoWE"'),
+    ("MAKEFILES env allowed", '"GNUMAKEFLAGS", "MAKEFILES", "GOFLAGS",', '"GNUMAKEFLAGS", "GOFLAGS",'),
+    ("bad stdin clears silently in tool mode",
+     '_unavailable(mode, "the hook input was not valid JSON", soft=True)', "emit_ok()"),
+    ("no transcript path fails open in tool mode",
+     '_unavailable(mode, "the hook input named no transcript")', "emit_ok()"),
+    ("missing transcript fails open in tool mode",
+     '_unavailable(mode, f"the transcript does not exist: {transcript_path}")', "emit_ok()"),
+    ("unreadable transcript fails open in tool mode",
+     '    if _evidence_mode() != "log":\n        raise TranscriptUnavailable(exc.__class__.__name__)',
+     '    return None'),
+    ("_unavailable fails open", '    if evidence == "log" or mode == "off":\n        emit_ok()\n    reason = (f"⚠️  Claim-check enforcer (CLAIM_CHECK_EVIDENCE={evidence}) could not examine "',
+     '    emit_ok()\n    reason = (f"⚠️  Claim-check enforcer (CLAIM_CHECK_EVIDENCE={evidence}) could not examine "'),
+    ("unquoted glob accepted", '            if c in "*?[":\n                # an unquoted glob',
+     '            if False:\n                # an unquoted glob'),
     # --- result guards ---
     ("is_error guard off", 'if b.get("is_error") is not False:', "if False:"),
     ("missing is_error counts as success", 'if b.get("is_error") is not False:',
@@ -61,8 +80,8 @@ MUTATIONS = (
      "return False"),
     ("go flags unchecked", 'if key == "go":', 'if key == "go" and False:'),
     ("tox subcommands unchecked", 'if key == "tox" and a in _TOX_SUBCOMMANDS:', "if False:"),
-    ("make variable overrides unchecked", 'if key == "make" and _ASSIGNMENT.match(a):',
-     "if False:"),
+    ("make variable overrides unchecked",
+     'if key == "make" and not a.startswith("-") and "=" in a:', "if False:"),
     ("attached short values unchecked", 'm = re.match(r"-([A-Za-z]+)", word)',
      'm = re.fullmatch(r"-([A-Za-z]+)", word)'),
     ("assignment denylist off",
@@ -116,6 +135,11 @@ def main():
             print("BASELINE FAILED — unmutated copy does not pass; fix that first.")
             return 1
         for name, old, new in MUTATIONS:
+            if name.startswith("unreadable transcript") and os.geteuid() == 0 \
+                    and os.environ.get("MUTATION_ALLOW_SKIPS") != "1":
+                rows.append((name, "SKIPPED", "root ignores file modes; set MUTATION_ALLOW_SKIPS=1"))
+                survivors.append(name)   # incomplete coverage is not a clean run
+                continue
             n = src.count(old)
             if n != 1:
                 print(f"SKIPPED (source text found {n}x, need 1): {name}")
@@ -123,14 +147,17 @@ def main():
                 continue
             (hooks_copy / "claim_check_hook.py").write_text(src.replace(old, new))
             rc, killer = _run_suite(hooks_copy)
-            killed = rc != 0
-            rows.append((name, "KILLED" if killed else "SURVIVED", killer))
+            # A kill is a named failing test. A nonzero exit with no FAILED line is a
+            # collection/import error: the mutant was never exercised, so it is not a kill.
+            killed = rc != 0 and bool(killer)
+            status = "KILLED" if killed else ("ERROR" if rc != 0 else "SURVIVED")
+            rows.append((name, status, killer or ("pytest exit %d, no failing test" % rc)))
             if not killed:
                 survivors.append(name)
         (hooks_copy / "claim_check_hook.py").write_text(src)
     for name, status, killer in rows:
         print(f"{status:9} {name:40} {killer}")
-    print(f"\n{len(rows) - len([r for r in rows if r[1] == 'SURVIVED'])}/{len(MUTATIONS)} killed")
+    print(f"\n{len([r for r in rows if r[1] == 'KILLED'])}/{len(MUTATIONS)} killed")
     return 0 if not survivors else 1
 
 

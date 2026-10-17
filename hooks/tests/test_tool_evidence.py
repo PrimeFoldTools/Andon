@@ -357,6 +357,18 @@ MUST_BLOCK = (
     "SHELL=/usr/bin/true make test", "RUSTC_WRAPPER=true cargo test",
     "CARGO_TARGET_X_RUNNER=true cargo test", "tox -n", "tox --skip-env x", "tsc --noCheck",
     "tsc -b --clean", "ctest --print-labels", "eslint --stdin", "eslint --no-config-lookup .",
+    # cross-model review 2026-10-16 #1: make treats the target as up to date (recipe
+    # never runs, exit 0) or takes a recipe from the command line
+    "make test --old-file=test", "make test --assume-old=test", "make test -o test",
+    "make test -otest", "make test --new-file=test", "make test -W test",
+    "make test --what-if=test", "make test --eval=x", "make test -E x", "make test --old=test",
+    "make test --assume-o=test",
+    # second critic 2026-10-16: assignment spellings, MAKEFILES injection, -e overrides
+    "make test SHELL:=/usr/bin/true", "make test SHELL::=true", "make test SHELL?=true",
+    "make test SHELL+=x", "make test .SHELLFLAGS=-nc", "MAKEFILES=inj.mk make test",
+    "PYTEST=true make test -e", "make test --environment-overrides", "make test --env",
+    # cross-model review 2026-10-16 #2: unquoted globs expand before the verifier runs
+    "pytest --co*", "pytest *", "pytest tests/test_*.py", "pytest -k x ?", "pytest [-]-co",
 )
 
 # Honest forms the grammar accepts (documented in HOOK_INSTALL §6).
@@ -368,6 +380,7 @@ MUST_PASS = (
     "set -o pipefail; pytest -q 2>&1 | tail -3", "set -euo pipefail && cd x && pytest -q | tail -3",
     "set -o pipefail; pytest -q 2>&1 | grep -E 'passed|failed' | tail -1",
     "go test ./...", "make test", "cargo test", "ruff check --fix .", "ctest -V", "pytest -q\n",
+    "pytest 'tests/test_*.py'", 'pytest "tests/test_[ab].py" -q',   # quoted globs stay creditable
 )
 
 
@@ -490,3 +503,143 @@ def test_parser_rejects_non_string(h):
     P = h._verify_prefixes()
     for cmd in (None, 7, ["pytest"], ""):
         assert h._is_verification_command(cmd, P) is False
+
+
+_MAKE_ENV_KEYS = ("MAKEFLAGS", "MFLAGS", "GNUMAKEFLAGS", "MAKEFILES", "MAKELEVEL", "MAKE_TERMOUT",
+                  "MAKE_TERMERR")
+
+
+def _make_env():
+    # the premise tests run real make; an exported MAKEFLAGS=-n would fake the baseline
+    return {k: v for k, v in os.environ.items() if k not in _MAKE_ENV_KEYS}
+
+
+# ---- cross-model review 2026-10-16 #1: the make bypass is real, not theoretical ----
+@pytest.mark.skipif(not __import__("shutil").which("make"), reason="make not installed")
+def test_real_make_old_file_skips_failing_recipe(tmp_path):
+    (tmp_path / "Makefile").write_text(".PHONY: test\ntest:\n\t@exit 2\n")
+    env = _make_env()
+    plain = subprocess.run(["make", "test"], cwd=tmp_path, capture_output=True, env=env)
+    skipped = subprocess.run(["make", "test", "--old-file=test"], cwd=tmp_path,
+                             capture_output=True, env=env)
+    assert plain.returncode != 0           # the recipe fails when it runs
+    assert skipped.returncode == 0         # --old-file skips it and reports success
+
+
+# ---- cross-model review 2026-10-16 #3: unavailable evidence fails closed in tool mode ----
+def _run_raw(tmp_path, stdin_text, evidence="tool", mode="block"):
+    r = subprocess.run([sys.executable, HOOK], input=stdin_text, capture_output=True,
+                       text=True, env=_env(tmp_path, evidence, mode))
+    assert r.returncode == 0, r.stderr
+    return json.loads(r.stdout.strip().splitlines()[-1])
+
+
+@pytest.mark.parametrize("stdin_text", ["", json.dumps({"session_id": SID})])
+def test_unavailable_input_fails_closed_in_tool_mode(tmp_path, stdin_text):
+    out = _run_raw(tmp_path, stdin_text)
+    assert _blocked(out) and "could not examine" in out["reason"]
+    assert _blocked(_run_raw(tmp_path, stdin_text, evidence="both"))
+    warned = _run_raw(tmp_path, stdin_text, mode="warn")
+    assert warned.get("continue") is True and "could not examine" in warned.get("systemMessage", "")
+    assert _passed(_run_raw(tmp_path, stdin_text, evidence="log"))   # default unchanged
+    assert _passed(_run_raw(tmp_path, stdin_text, mode="off"))
+
+
+def test_missing_transcript_fails_closed_in_tool_mode(tmp_path):
+    missing = str(tmp_path / "nope.jsonl")
+    out = _run(tmp_path, missing)
+    assert _blocked(out) and "does not exist" in out["reason"]
+    assert _passed(_run(tmp_path, missing, evidence="log"))
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file modes")
+def test_unreadable_transcript_fails_closed_in_tool_mode(tmp_path):
+    t = _write(tmp_path, [_prompt(), _final()])
+    os.chmod(t, 0)
+    try:
+        out = _run(tmp_path, t)
+        assert _blocked(out) and "could not be read" in out["reason"]
+        assert _passed(_run(tmp_path, t, evidence="log"))
+    finally:
+        os.chmod(t, 0o600)
+
+
+def test_stop_hook_active_still_passes_in_tool_mode(tmp_path):
+    t = _write(tmp_path, [_prompt(), _final()])
+    stdin = json.dumps({"transcript_path": t, "stop_hook_active": True})
+    assert _passed(_run_raw(tmp_path, stdin))
+
+
+def test_malformed_stdin_warns_not_blocks_in_tool_mode(tmp_path):
+    # stop_hook_active cannot be read from unparseable input, so a block could re-fire
+    # forever; the strict modes surface it as a warning instead and never clear silently.
+    for ev in ("tool", "both"):
+        out = _run_raw(tmp_path, "{", evidence=ev)
+        assert out.get("continue") is True and "decision" not in out
+        assert "could not examine" in out.get("systemMessage", "")
+    assert _passed(_run_raw(tmp_path, "{", evidence="log"))   # default unchanged
+    assert _passed(_run_raw(tmp_path, "{", mode="off"))
+
+
+@pytest.mark.skipif(not __import__("shutil").which("make"), reason="make not installed")
+def test_real_make_assignment_spellings_skip_failing_recipe(tmp_path):
+    (tmp_path / "Makefile").write_text(".PHONY: test\ntest:\n\t@exit 2\n")
+    (tmp_path / "inj.mk").write_text("SHELL = /usr/bin/true\n")
+    env = _make_env()
+    assert subprocess.run(["make", "test"], cwd=tmp_path, capture_output=True,
+                          env=env).returncode != 0
+    assert subprocess.run(["make", "test", "SHELL:=/usr/bin/true"], cwd=tmp_path,
+                          capture_output=True, env=env).returncode == 0
+    assert subprocess.run(["make", "test"], cwd=tmp_path, capture_output=True,
+                          env={**env, "MAKEFILES": "inj.mk"}).returncode == 0
+
+
+# ---- cross-model review 2026-10-16 #5: corrupt exactly one field, then restore it ----
+def test_numeric_timestamp_rejected_and_restoring_it_passes(tmp_path):
+    use = _tool_use("pytest -q", tid="t9")
+    good = _tool_result(tid="t9")
+    bad = dict(good); bad["timestamp"] = 12345          # the only difference
+    assert _blocked(_run(tmp_path, _write(tmp_path, [_prompt(), use, bad, _final()])))
+    assert _passed(_run(tmp_path, _write(tmp_path, [_prompt(), use, good, _final()])))
+
+
+def test_missing_timestamp_rejected_and_restoring_it_passes(tmp_path):
+    use = _tool_use("pytest -q", tid="t9")
+    good = _tool_result(tid="t9")
+    bad = {k: v for k, v in good.items() if k != "timestamp"}
+    assert _blocked(_run(tmp_path, _write(tmp_path, [_prompt(), use, bad, _final()])))
+    assert _passed(_run(tmp_path, _write(tmp_path, [_prompt(), use, good, _final()])))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="posix shell glob")
+def test_real_shell_glob_expands_to_banned_flag(tmp_path):
+    # premise for #2: with a file named --collect-only present, `pytest --co*` becomes
+    # `pytest --collect-only` before pytest runs; the hook must not credit that line.
+    (tmp_path / "--collect-only").write_text("")
+    r = subprocess.run(["bash", "-c", "printf '%s\\n' --co*"], cwd=tmp_path,
+                       capture_output=True, text=True)
+    assert r.stdout.strip() == "--collect-only"
+
+
+# ---- cross-model round 2: a read failure AFTER the existence check must not pass ----
+def test_read_error_after_exists_fails_closed_in_tool_mode(h, tmp_path, monkeypatch, capsys):
+    import io
+    t = _write(tmp_path, [_prompt(), _final()])
+    monkeypatch.setenv("CLAIM_CHECK_EVIDENCE", "tool")
+    monkeypatch.setenv("CLAIM_CHECK_ENFORCE_MODE", "block")
+    monkeypatch.setenv("CLAIM_CHECKS_LOG_PATH", str(tmp_path / "log.jsonl"))
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"transcript_path": t})))
+
+    def boom(self, *a, **k):
+        raise OSError("vanished after the existence check")
+    monkeypatch.setattr(h.Path, "read_text", boom)
+    with pytest.raises(SystemExit):
+        h.main()
+    out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert _blocked(out) and "could not be read" in out["reason"]
+
+    monkeypatch.setenv("CLAIM_CHECK_EVIDENCE", "log")   # default: unchanged, lets it through
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"transcript_path": t})))
+    with pytest.raises(SystemExit):
+        h.main()
+    assert _passed(json.loads(capsys.readouterr().out.strip().splitlines()[-1]))

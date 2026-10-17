@@ -111,7 +111,7 @@ By default the evidence is the agent's own `log_claim.py` line. The agent being 
 - `REDIRECTS` — `2>&1`, `> FILE`, `>> FILE`, `>| FILE`, `2> FILE`, `2>> FILE`, anywhere in the verification's own segment (a leading `2>&1 pytest -q` is accepted too).
 - `FILTER` — `tail`, `head`, `grep` or `cat`, one or more stages, only after `set -o pipefail`. (`head` and `grep -q` can stop reading early; the verification then dies of SIGPIPE and the run is not credited.)
 - `&& COMMAND` — plain commands chained with `&&` after the verification. They run only if everything before them succeeded, so a zero status still means the verification passed.
-- Words may use `'single'` quotes (anything but `'`) and `"double"` quotes (no `$`, backtick, `\` or `!` inside). Unquoted words use only letters, digits and `_ - . / : = , @ % + ~ * ? [ ]`.
+- Words may use `'single'` quotes (anything but `'`) and `"double"` quotes (no `$`, backtick, `\` or `!` inside). Unquoted words use only letters, digits and `_ - . / : = , @ % + ~`. Glob characters `* ? [` must be quoted: the shell expands them before the verifier runs, so a file named `--collect-only` would turn `pytest --co*` into a no-run flag. A quoted glob reaches pytest as a literal pattern, so name a directory or the files you mean instead.
 
 Anything else makes the line uncreditable: `#`, `$`, `(`, `)`, `{`, `}`, `<`, `\`, backticks, `!`, `||`, a lone `&`, `|&`, `&>`, `;` anywhere but right after the leading `set`, a newline or carriage return inside the line, `trap`/`eval`/`exec`/`source` (they are not allowlisted commands, so a line that starts with them never matches). Refusal only withholds credit from an honest run.
 
