@@ -88,7 +88,7 @@ By default the evidence is the agent's own `log_claim.py` line. The agent being 
 | `both` | both of the above, checked separately |
 | any other value | treated as `both` (strictest), so a typo surfaces as warnings instead of silently weakening the gate |
 
-`warn` / `block` / `off` work exactly as before; the evidence mode only changes what counts as evidence. In `tool` / `both` mode an internal error in the hook fails **closed** (a warning in warn mode, a block in block mode); in the default mode it still fails open, as before.
+`warn` / `block` / `off` work exactly as before; the evidence mode only changes what counts as evidence. In `tool` / `both` mode an internal error in the hook, or a transcript it cannot find or read, fails **closed** (a warning in warn mode, a block in block mode; hook input that is not JSON only warns); in the default mode it still fails open, as before.
 
 **What counts as a recorded run.** All of these, from the transcript:
 
@@ -166,7 +166,7 @@ Lower-stakes — it only *adds* context, never blocks — so you can install it 
 }
 ```
 
-It looks for `memory/MEMORY.md` in your project (override with `AUTO_ORIENT_MEMORY_PATH=/abs/path`) and injects it **once per session** — not every turn, so it doesn't waste context. Turn it off with `AUTO_ORIENT=off`. Fail-safe like the claim-check hook: no memory file, or any error → it injects nothing and never blocks.
+It looks for `memory/MEMORY.md` in your project (override with `AUTO_ORIENT_MEMORY_PATH=/abs/path`) and injects it **once per session** — not every turn, so it doesn't waste context. Turn it off with `AUTO_ORIENT=off`. It caps the memory text it injects at 8,000 bytes (a one-line header and a truncation note are added on top); change that with `AUTO_ORIENT_MAX_BYTES=N` (a value that is not a positive whole number falls back to 8,000). Fail-safe: no memory file, or any error → it injects nothing and never blocks.
 
 Now **wrap** (save at session end) + **orient** (load at session start) form the full loop — your context survives across sessions automatically.
 
@@ -195,7 +195,8 @@ Already have a `"hooks"` block? Add the `Stop` / `UserPromptSubmit` keys *into* 
 
 - Per-run: `CLAIM_CHECK_ENFORCE_MODE=off` in the command (silent pass-through).
 - Permanently: remove the hook entry from `settings.json`.
-- It is **fail-safe by design**: malformed input, a missing transcript, or any error → it passes the turn through. It never blocks because *it* broke.
+- In the **default evidence mode** (`CLAIM_CHECK_EVIDENCE` unset, blank or `log`) it is **fail-safe by design**: malformed input, a missing transcript, or any error → it passes the turn through. It never blocks because *it* broke.
+- With `CLAIM_CHECK_EVIDENCE=tool`, `both`, or any other non-blank value (read as `both`) it **fails closed** instead (section 6). A missing transcript path, a transcript that is missing or unreadable, or an internal error gives a warning in warn mode and a block in block mode. Hook input that is not JSON only ever warns. To get unstuck: set `CLAIM_CHECK_ENFORCE_MODE=warn` or `=off`, or remove `CLAIM_CHECK_EVIDENCE`.
 
 ## Tuning false-fires
 

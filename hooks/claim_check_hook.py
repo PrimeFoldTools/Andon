@@ -78,6 +78,7 @@ import json
 import os
 import re
 import sys
+from bisect import bisect_left, bisect_right
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -261,30 +262,210 @@ def read_last_assistant_message(transcript_path):
 
 
 # ---------- CLAIM DETECTION + EXEMPTION ----------
-def _is_backtick_wrapped(text, m_start, m_end):
-    bt_open = text.rfind("`", max(0, m_start - 200), m_start)
-    if bt_open == -1:
-        return False
-    bt_close = text.find("`", m_end, min(len(text), m_end + 200))
-    if bt_close == -1:
-        return False
-    return "`" not in text[bt_open + 1:m_start]
+# Code is found the way Markdown pairs backticks, not by "nearest tick before, nearest
+# tick after" — that heuristic read the CLOSING tick of one span and the OPENING tick of
+# the next as one span around prose, and hid the done-claim between them.
+_FENCE_OPEN = re.compile(r"(`{3,})[^`]*")      # ```lang (no backtick in the info string)
+_FENCE_CLOSE = re.compile(r"(`{3,})[ \t]*")
+_LIST_ITEM = re.compile(r"(?:[-+*]|(\d{1,9})[.)])(?=[ \t]|$)[ \t]*")
+_QUOTE = re.compile(r" {0,3}> ?")
+# Text that is not paragraph text: an ATX heading, a table row, a fence marker line (a
+# ~~~ fence is only a boundary here: its lines are read as prose, as before).
+_NOT_PARA = re.compile(r"#{1,6}(?:[ \t]|$)|\||`{3,}[^`]*$|~{3,}")
+_TICK_RUN = re.compile(r"`+")
 
 
-def _is_blockquote_line(text, m_start):
-    line_start = text.rfind("\n", 0, m_start) + 1
-    i = line_start
-    saw_gt = False
-    while i < m_start:
-        c = text[i]
-        if c == ">":
-            saw_gt = True
-            i += 1
-        elif c in (" ", "\t"):
+def _width(s):
+    """Columns of leading whitespace (a tab runs to the next multiple of 4)."""
+    return len(s[:len(s) - len(s.lstrip(" \t"))].expandtabs(4))
+
+
+def _is_para(rest):
+    return bool(rest) and not _NOT_PARA.match(rest)
+
+
+def _interrupts(rest, lazy):
+    """Does this line (its text after indentation) start a block that ends the paragraph
+    above it? A list item does only when it has text and, if numbered, starts at 1 —
+    unless the line is lazy (outside the paragraph's list item or quote): then any does."""
+    if _NOT_PARA.match(rest):
+        return True
+    m = _LIST_ITEM.match(rest)
+    return bool(m and (lazy or (rest[m.end():].strip()
+                                and (m.group(1) is None or int(m.group(1)) == 1))))
+
+
+def _list_markers(rest, at, items):
+    """Strip the list markers that start `rest` (at column `at`), pushing each new item's
+    content column onto `items`. Returns (content, its column, is it indented code) —
+    5+ columns after a marker start indented code inside the item."""
+    i, m = 0, _LIST_ITEM.match(rest)
+    while m:
+        mark = m.group(0).rstrip(" \t")
+        c = at + len(mark)
+        for ch in m.group(0)[len(mark):]:       # the gap, in columns (tab: next stop)
+            c = c + 1 if ch == " " else (c // 4 + 1) * 4
+        gap, i = c - at - len(mark), m.end()
+        at += len(mark) + (gap if 1 <= gap <= 4 and i < len(rest) else 1)
+        items.append(at)
+        if gap > 4 and i < len(rest):
+            return rest[i:], at, True
+        m = _LIST_ITEM.match(rest, i)
+    return rest[i:], at, False
+
+
+def _intersect(xs, ys):
+    """The overlaps of two sorted lists of disjoint (start, end) spans."""
+    out, i, j = [], 0, 0
+    while i < len(xs) and j < len(ys):
+        a, b = max(xs[i][0], ys[j][0]), min(xs[i][1], ys[j][1])
+        if a < b:
+            out.append((a, b))
+        if xs[i][1] < ys[j][1]:
             i += 1
         else:
-            break
-    return saw_gt
+            j += 1
+    return out
+
+
+def _code_spans(text):
+    """Sorted, non-overlapping (start, end) spans of Markdown code: fences, then inline.
+
+    Blocks are read the way Markdown reads them, closely enough for this exemption: a
+    fence opens on a line of 3+ backticks and an info string with no backtick, indented
+    0-3 columns from its container (the page, or the list item it opens or sits in), and
+    closes on a line of at least as many backticks and nothing else, indented the same
+    way. A line 4+ columns in, outside a paragraph, is indented code, not a fence.
+    Inline spans pair left to right: a run of N backticks closes at the next run of
+    exactly N in its paragraph (so ``a `b` c`` is one span), and only text that also
+    closes on the same line or the next one counts. Deliberately strict, on the side of
+    firing: a run with no partner that near is a literal backtick, and a fence that never
+    closes, or whose list item ends first, is plain text — an unpaired backtick never
+    turns the rest of the message into code. (Indented code reads as prose: claims fire.)"""
+    spans, prose = [], []     # prose = (start, end, line no) of lines outside any fence
+    joins = set()             # lines that continue the paragraph of the line above
+    items = []                # content columns of the open list items (ascending)
+    fence, held = None, []    # open fence (start, run length, column) + the lines it holds
+    para = None               # quote depth of the open paragraph (None: no paragraph)
+    lines = text.split("\n")
+    starts = [0]
+    for line in lines[:-1]:
+        starts.append(starts[-1] + len(line) + 1)
+    k = 0
+    while k < len(lines):
+        body = lines[k][:-1] if lines[k].endswith("\r") else lines[k]
+        start, ind = starts[k], _width(body)
+        if fence is not None:
+            rest = body.lstrip(" \t")
+            if rest and ind < fence[2]:
+                prose += held           # its list item ended first: plain text, and
+                fence, held = None, []  # this line is read again as an ordinary line
+                continue
+            m = _FENCE_CLOSE.fullmatch(rest)
+            if m and len(m.group(1)) >= fence[1] and ind - fence[2] <= 3:
+                spans.append((fence[0], min(start + len(lines[k]) + 1, len(text))))
+                fence, held = None, []
+            else:
+                held.append((start, start + len(body), k))
+            k += 1
+            continue
+        depth, qend, m = 0, 0, _QUOTE.match(body)
+        while m:
+            depth, qend, m = depth + 1, m.end(), _QUOTE.match(body, m.end())
+        rest = body[qend:].lstrip(" \t")
+        if not rest:                                # a blank line ends the paragraph
+            para = None
+        elif depth:                                 # quoted (claims here never fire):
+            if para is not None and depth <= para and not _interrupts(rest, depth < para):
+                joins.add(k)                        #   track its paragraph, nothing more
+            else:
+                para = depth if _is_para(rest) else None
+        else:
+            inner = bisect_right(items, ind)        # items[:inner] hold this line
+            col = items[inner - 1] if inner else 0
+            lazy = bool(para) or inner < len(items)
+            if para is not None and (ind - col >= 4 or not _interrupts(rest, lazy)):
+                joins.add(k)                        # continues the paragraph (or lazily)
+            elif ind - col >= 4:                    # indented code, not paragraph text
+                del items[inner:]
+                para = None
+            else:                                   # a new block
+                del items[inner:]
+                rest, at, code = _list_markers(rest, ind, items)
+                if _QUOTE.match(rest):          # a quote opens inside the item: keep
+                    para = 1 if _is_para(rest.lstrip(" >\t")) else None  # only this
+                    prose.append((start, start + len(body), k))
+                    k += 1
+                    continue
+                m = None if code else _FENCE_OPEN.fullmatch(rest)
+                if m:
+                    fc = at if at != ind else col
+                    fence, held = (start, len(m.group(1)), fc), [(start, start + len(body), k)]
+                    para = None
+                    k += 1
+                    continue
+                para = 0 if _is_para(rest) and not code else None
+        prose.append((start, start + len(body), k))
+        k += 1
+    prose += held               # an unclosed fence is plain text
+    runs, pid = [], {}          # backtick runs (start, end, line no); line no -> paragraph
+    for a, b, n in prose:
+        pid[n] = pid.get(n - 1, n) if n in joins else n
+        runs += [(m.start(), m.end(), n) for m in _TICK_RUN.finditer(text, a, b)]
+    nxt, last = [None] * len(runs), {}
+    for i in range(len(runs) - 1, -1, -1):   # the next run of the same length (linear)
+        w = runs[i][1] - runs[i][0]
+        nxt[i], last[w] = last.get(w), i
+
+    def pair(near):
+        out, i = [], 0
+        while i < len(runs):
+            j = nxt[i]
+            if j is not None and near(runs[i][2], runs[j][2]):
+                out.append((runs[i][0], runs[j][1]))
+                i = j + 1
+            else:
+                i += 1          # no partner close enough: a literal backtick
+        return out
+    # Inline code is text that BOTH readings call code: Markdown's (a tick pairs anywhere
+    # in its paragraph) and the strict one (its partner is on the same line or the next).
+    # Either alone can shift later pairs and turn prose into code; together they cannot.
+    spans += _intersect(pair(lambda a, b: pid[a] == pid[b]), pair(lambda a, b: b - a <= 1))
+    return sorted(spans)
+
+
+def _in_code(code, text, m_start, m_end):
+    """True when the match, minus its surrounding whitespace, lies inside ONE code span.
+    A match that only partly overlaps code is still (at least partly) prose, so it fires.
+    `code` = (starts, ends) of the sorted, disjoint spans: a binary search finds the one
+    span that could hold the match, so thousands of spans and claims stay fast."""
+    starts, ends = code
+    seg = text[m_start:m_end]
+    s = m_start + (len(seg) - len(seg.lstrip()))
+    e = m_end - (len(seg) - len(seg.rstrip()))
+    i = bisect_right(starts, s) - 1
+    return i >= 0 and e <= ends[i]
+
+
+def _blockquote_checker(text):
+    """is_quoted(m_start): does a ">" appear in the run of ">" / blanks that opens the
+    match's line, before the match? Each line's run is scanned once and the line start
+    is found by binary search, so many claims on one long line stay linear."""
+    newlines = [m.start() for m in re.finditer("\n", text)]
+    first_gt = {}             # line start -> index of the first ">" in its run, or -1
+
+    def is_quoted(m_start):
+        n = bisect_left(newlines, m_start)
+        line_start = newlines[n - 1] + 1 if n else 0
+        if line_start not in first_gt:
+            i, gt = line_start, -1
+            while i < len(text) and text[i] in "> \t":
+                if gt < 0 and text[i] == ">":
+                    gt = i
+                i += 1
+            first_gt[line_start] = gt
+        return 0 <= first_gt[line_start] < m_start
+    return is_quoted
 
 
 def _ends_in_question(text, m_end):
@@ -312,14 +493,17 @@ def _iter_claim_matches(text):
     matcher on isolated fragments — a fence or quotation that spans a fragment boundary
     loses its markers in isolation, which re-litigates the exemption with less context
     and mints phantom claims out of pasted evidence."""
+    spans = _code_spans(text)
+    code = ([a for a, _b in spans], [b for _a, b in spans])
+    is_quoted = _blockquote_checker(text)
     for pat in CLAIM_PATTERNS:
         for m in pat.finditer(text):
             phrase = m.group(0).strip()
             if not phrase.endswith(_ASSERTED_END) and _ends_in_question(text, m.end()):
                 continue
-            if _is_backtick_wrapped(text, m.start(), m.end()):
+            if _in_code(code, text, m.start(), m.end()):
                 continue
-            if _is_blockquote_line(text, m.start()):
+            if is_quoted(m.start()):
                 continue
             ctx_start = max(0, m.start() - 80)
             ctx = text[ctx_start:min(len(text), m.end() + 80)]
@@ -408,9 +592,15 @@ def _claim_token_sets(message):
     subjectless message yields an empty set — see has_fresh_log for that (unbindable) case."""
     msg_tokens = _content_tokens(message)
     frags = _fragment_spans(message)
+    frag_ends = [fe for _fs, fe in frags]
     sets = []
     for _phrase, s, e in _iter_claim_matches(message):
-        parts = [message[fs:fe] for fs, fe in frags if fs < e and fe > s]
+        # Fragments are sorted and disjoint: the ones the match touches run from the
+        # first that ends after it starts (binary search, not a scan per claim).
+        k, parts = bisect_right(frag_ends, s), []
+        while k < len(frags) and frags[k][0] < e:
+            parts.append(message[frags[k][0]:frags[k][1]])
+            k += 1
         toks = _content_tokens(" ".join(parts))
         sets.append(toks or msg_tokens)
     if not sets:  # gate saw a claim but spans vanished (shouldn't happen) — fail closed-ish
