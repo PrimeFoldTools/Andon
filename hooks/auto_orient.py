@@ -16,6 +16,9 @@ USAGE
      AUTO_ORIENT_MEMORY_PATH=/abs/path/to/MEMORY.md
   4. It injects the index ONCE per session (not every turn — that would waste context).
      Turn it off with AUTO_ORIENT=off.
+  5. It caps the index text at 8000 bytes (a one-line header and a truncation note are
+     added on top); override with AUTO_ORIENT_MAX_BYTES=N. A value that is not a
+     positive whole number falls back to 8000.
 
 Fail-safe by design: any error, a missing file, or an already-oriented session →
 injects nothing and never blocks the prompt. (Contract: UserPromptSubmit context
@@ -31,7 +34,17 @@ import sys
 import tempfile
 from pathlib import Path
 
-MAX_BYTES = int(os.environ.get("AUTO_ORIENT_MAX_BYTES", "8000"))
+DEFAULT_MAX_BYTES = 8000
+
+
+def _max_bytes():
+    # Parsed at call time, not import time: an int() at module level ran outside the
+    # fail-safe try below, so AUTO_ORIENT_MAX_BYTES=abc crashed the hook (exit 1).
+    try:
+        n = int(os.environ.get("AUTO_ORIENT_MAX_BYTES", ""))
+    except ValueError:
+        return DEFAULT_MAX_BYTES
+    return n if n > 0 else DEFAULT_MAX_BYTES  # 0 / negative would keep nothing
 
 
 def _emit_context(text):
@@ -104,15 +117,21 @@ def main():
         except OSError:
             pass  # can't mark → still inject once now (safe, just not deduped)
 
-    # Truncate at a line boundary (never mid-line / mid-char) if over the byte cap.
-    if len(text.encode()) > MAX_BYTES:
+    # Over the byte cap: keep whole lines (never cut mid-character). Only a first line
+    # that is over the cap by itself gets cut mid-line, on a character boundary.
+    max_bytes = _max_bytes()
+    if len(text.encode()) > max_bytes:
         kept, total = [], 0
         for ln in text.splitlines(keepends=True):
             b = len(ln.encode())
-            if total + b > MAX_BYTES:
+            if total + b > max_bytes:
                 break
             kept.append(ln)
             total += b
+        if not kept:
+            # The first line alone is over the cap: cut it at the cap on a character
+            # boundary (drop a split multi-byte tail) rather than inject only the notice.
+            kept = [text.encode()[:max_bytes].decode("utf-8", errors="ignore")]
         text = "".join(kept).rstrip() + "\n\n…[truncated — open the file for the rest]"
 
     # Show a path relative to the project when possible (disambiguates root vs memory/).

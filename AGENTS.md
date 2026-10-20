@@ -33,5 +33,5 @@ If you see a traceback, **stop and report it** — the hooks are supposed to be 
 
 - Leave the claim-check hook in **warn** mode. Let the operator promote it to `block`.
 - Never overwrite an existing `CLAUDE.md` or `settings.json` without showing the operator the diff.
-- The hooks are fail-safe (any error → no-op). A traceback in the smoke test means something's wrong — report, don't proceed.
+- The hooks are fail-safe in their default mode (any error → no-op). One exception: with `CLAIM_CHECK_EVIDENCE=tool` or `both`, the claim-check hook fails **closed** instead (a warning in warn mode, a block in block mode; see HOOK_INSTALL §6). A traceback in the smoke test means something's wrong — report, don't proceed.
 - Confirm Layer 1 works before moving up. One `MEMORY.md` is already a real win.
