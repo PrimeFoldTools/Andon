@@ -314,6 +314,14 @@ def _list_markers(rest, at, items):
     return rest[i:], at, False
 
 
+def _escaped(text, i):
+    """1 when text[i] follows an odd number of backslashes (it is escaped), else 0."""
+    j = i
+    while j and text[j - 1] == "\\":
+        j -= 1
+    return (i - j) % 2
+
+
 def _intersect(xs, ys):
     """The overlaps of two sorted lists of disjoint (start, end) spans."""
     out, i, j = [], 0, 0
@@ -338,10 +346,13 @@ def _code_spans(text):
     way. A line 4+ columns in, outside a paragraph, is indented code, not a fence.
     Inline spans pair left to right: a run of N backticks closes at the next run of
     exactly N in its paragraph (so ``a `b` c`` is one span), and only text that also
-    closes on the same line or the next one counts. Deliberately strict, on the side of
-    firing: a run with no partner that near is a literal backtick, and a fence that never
-    closes, or whose list item ends first, is plain text — an unpaired backtick never
-    turns the rest of the message into code. (Indented code reads as prose: claims fire.)"""
+    closes on the same line or the next one counts. Outside code, a backslash before a run
+    makes its first tick literal, so the run opens one tick short (one escaped tick cannot
+    open at all); inside a span a backslash is literal, so a tick after one still closes.
+    Deliberately strict, on the side of firing: a run with no partner that near is a
+    literal backtick, and a fence that never closes, or whose list item ends first, is
+    plain text — an unpaired backtick never turns the rest of the message into code.
+    (Indented code reads as prose: claims fire.)"""
     spans, prose = [], []     # prose = (start, end, line no) of lines outside any fence
     joins = set()             # lines that continue the paragraph of the line above
     items = []                # content columns of the open list items (ascending)
@@ -408,21 +419,22 @@ def _code_spans(text):
         prose.append((start, start + len(body), k))
         k += 1
     prose += held               # an unclosed fence is plain text
-    runs, pid = [], {}          # backtick runs (start, end, line no); line no -> paragraph
+    runs, pid = [], {}          # runs (start, end, line no, escaped); line no -> paragraph
     for a, b, n in prose:
         pid[n] = pid.get(n - 1, n) if n in joins else n
-        runs += [(m.start(), m.end(), n) for m in _TICK_RUN.finditer(text, a, b)]
+        runs += [(m.start(), m.end(), n, _escaped(text, m.start()))
+                 for m in _TICK_RUN.finditer(text, a, b)]
     nxt, last = [None] * len(runs), {}
-    for i in range(len(runs) - 1, -1, -1):   # the next run of the same length (linear)
-        w = runs[i][1] - runs[i][0]
-        nxt[i], last[w] = last.get(w), i
+    for i in range(len(runs) - 1, -1, -1):   # the next run that closes it (linear): an
+        s, e, _n, esc = runs[i]              # escaped run opens one tick short, but
+        nxt[i], last[e - s] = last.get(e - s - esc), i   # closes with all its ticks
 
     def pair(near):
         out, i = [], 0
         while i < len(runs):
             j = nxt[i]
             if j is not None and near(runs[i][2], runs[j][2]):
-                out.append((runs[i][0], runs[j][1]))
+                out.append((runs[i][0] + runs[i][3], runs[j][1]))
                 i = j + 1
             else:
                 i += 1          # no partner close enough: a literal backtick
