@@ -278,6 +278,70 @@ def test_fence_in_a_quote_in_a_list_item_is_not_paragraph_text():
     assert find_claims("2. > ```x\nThe migration is done.``` x") == ["is done"]
 
 
+# ---- backslash-escaped backticks (2026-10-21) ----
+# Outside code a backslash makes the next tick literal, so it cannot open a span: a run
+# of N ticks after an odd number of backslashes opens as a run of N-1. Inside a span a
+# backslash is literal, so a tick after it still closes the span.
+def test_escaped_tick_pair_is_prose():
+    # Markdown shows \`...\` as plain text with visible ticks. Read as a span, it hid
+    # the claim.
+    assert find_claims(r"\`The migration is done.\`") == ["is done"]
+
+
+def test_escaped_opener_cannot_pair_with_a_later_tick():
+    assert find_claims(r"\`The migration is done.`") == ["is done"]
+
+
+def test_escaped_opener_does_not_shift_the_pairs_after_it():
+    # The escaped tick is a literal, so `x` is the only span and the claim is prose.
+    assert find_claims(r"\`The migration is done. `x` too.") == ["is done"]
+
+
+def test_backslash_inside_a_span_does_not_stop_its_closer():
+    # `foo\` is one span: inside code the backslash is literal, so the tick after it
+    # closes the span.
+    assert not _fires(r"`The migration is done.\`")
+
+
+def test_span_ending_in_a_backslash_closes_before_the_prose():
+    assert find_claims(r"`C:\temp\` The migration is done. `x`") == ["is done"]
+
+
+def test_escaped_backslash_before_a_tick_still_opens():
+    # \\ is an escaped backslash, so the tick after it is a real opener.
+    assert not _fires(r"\\`The migration is done.`")
+
+
+def test_odd_backslash_count_before_a_tick_escapes_it():
+    assert find_claims(r"\\\`The migration is done.`") == ["is done"]
+
+
+def test_escaped_double_run_opens_as_a_single_tick():
+    # \`` is a literal tick, then a run of one that pairs with the closing tick.
+    assert not _fires(r"\``The migration is done.`")
+
+
+def test_escaped_double_run_cannot_pair_with_a_double():
+    assert find_claims(r"\``The migration is done.``") == ["is done"]
+
+
+def test_escaped_tick_in_a_paragraph_does_not_pair_on_the_next_line():
+    assert find_claims("Use \\`x.\nThe migration is done.` See `y`.") == ["is done"]
+
+
+def test_many_backslashes_and_ticks_stay_fast():
+    import random
+    import time
+    rng = random.Random(11)
+    lines = ["".join(rng.choice("`\\a ") for _ in range(rng.randint(0, 12)))
+             for _ in range(100_000)]
+    # The last paragraph: an even run of backslashes, so its tick still opens a span.
+    msg = "\n".join(lines) + "\n\n" + "\\" * 100_000 + "`The migration is done.`"
+    t0 = time.monotonic()
+    assert find_claims(msg) == []
+    assert time.monotonic() - t0 < 5.0
+
+
 # ---- the binary-search speedups give the same answers as the scans they replace ----
 def test_token_set_attribution_matches_a_full_scan():
     import random
