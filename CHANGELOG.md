@@ -6,6 +6,20 @@ of the doctrine in [`docs/THE_OPERATORS_CODE.md`](docs/THE_OPERATORS_CODE.md).
 
 ## Unreleased
 
+- **claim-check: transcript parsing and matcher cost.** JSONL records (the transcript and
+  the verification log) are now split on `\n` only. `str.splitlines()` also split on
+  U+2028, U+2029 and U+0085, which JSON allows raw inside a string, and Claude Code writes
+  U+2028 unescaped; a final message holding one was read as broken records and the hook
+  read an older message instead. In `tool`/`both` mode a newest record that is not valid
+  JSON now fails closed like an unreadable transcript; `log` mode still skips it. The
+  first three claim patterns use a new sentence-start anchor that is linear on long runs
+  of blank lines (16,000 newlines took about 68 s; 50,000 now take about 0.1 s) and gives
+  the same match spans as before (a seeded differential test pins this). Claim token sets
+  tokenise each sentence fragment once instead of once per claim (4,000 claims in one
+  fragment: about 4 s before, under 0.1 s now). No change to which claims are detected.
+  No message-length cap was added: the matcher is linear, and a cap that skips text
+  would give a claim a place to hide.
+
 - **claim-check: opt-in harness-recorded evidence** (`CLAIM_CHECK_EVIDENCE=tool|both`; default
   unchanged). In `tool` mode a done-claim is cleared only by a passing, allowlisted verification run
   (`pytest`, `make test`, …) that Claude Code recorded in this session's transcript inside the
