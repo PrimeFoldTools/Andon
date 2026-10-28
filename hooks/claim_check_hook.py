@@ -78,6 +78,7 @@ import json
 import os
 import re
 import sys
+import unicodedata
 from bisect import bisect_left, bisect_right
 from datetime import datetime, timezone
 from pathlib import Path
@@ -243,18 +244,26 @@ def read_last_assistant_message(transcript_path):
     if not p.exists():
         return ""
     try:
-        lines = _jsonl_lines(p.read_text(errors="ignore"))
+        text = p.read_text(errors="ignore")
     except OSError as e:
         _unreadable(e)
         return ""
+    lines = _jsonl_lines(text)
+    # A last line with no terminating "\n" is a record the harness is still writing
+    # (the transcript-flush race). It is not a finished record, so it is not evidence
+    # either way: skip it in every mode. Only a newline-terminated record that does not
+    # parse makes the transcript unavailable below.
+    in_flight = len(lines) - 1 if not text.endswith("\n") else -1
     now_ts = datetime.now(timezone.utc).timestamp()
-    for line in reversed(lines):
-        line = line.strip()
+    for idx in range(len(lines) - 1, -1, -1):
+        line = lines[idx].strip()
         if not line:
             continue
         try:
             entry = json.loads(line)
         except json.JSONDecodeError as e:
+            if idx == in_flight:
+                continue
             # A record newer than the last assistant message does not parse, so the
             # final message may be in it. Tool/both mode: fail closed (unavailable).
             # Log mode: skip it and read the previous record, as before.
@@ -575,7 +584,29 @@ def _sentence_start(text, m, floor):
     return s
 
 
+def _visible_text(text):
+    """The message as a reader sees it, which is the text every claim check runs on.
+
+    Removed: Unicode format characters (category Cf: zero-width space and joiner,
+    word joiner, byte-order mark, soft hyphen and the like) and every C0/C1 control
+    character except "\n" and "\t". None of them shows as a character, so "Do<ZWSP>ne."
+    reads as "Done." and is checked as "Done.". A control is removed, not turned into a
+    space, so "D<VT>one." stays one word. A "\r" goes too ("\r\n" reads as "\n").
+    Text with none of these characters is returned unchanged. The function is idempotent,
+    so callers may apply it more than once; spans and echoed phrases all index the
+    returned text."""
+    if text.isascii():
+        if text.isprintable() or not any(
+                (c < " " and c not in "\n\t") or c == "\x7f" for c in text):
+            return text
+    return "".join(
+        c for c in text
+        if not (unicodedata.category(c) == "Cf"
+                or (unicodedata.category(c) == "Cc" and c not in "\n\t")))
+
+
 def find_claims(text):
+    text = _visible_text(text)
     matches = []
     seen = set()
     for phrase, _s, _e in _iter_claim_matches(text):
@@ -649,6 +680,7 @@ def _claim_token_sets(message):
     A claim whose fragment has no content tokens (a bare "Done.") falls back to the
     whole message, so "I refactored the parser. Done." still binds on "parser". A truly
     subjectless message yields an empty set — see has_fresh_log for that (unbindable) case."""
+    message = _visible_text(message)
     msg_tokens = _content_tokens(message)
     frags = _fragment_spans(message)
     frag_ends = [fe for _fs, fe in frags]
@@ -1217,6 +1249,7 @@ def main():
         message = read_last_assistant_message(transcript_path)
     except TranscriptUnavailable as e:
         _unavailable(mode, f"the transcript could not be read: {e}")
+    message = _visible_text(message)
     if not message:
         emit_ok()
 

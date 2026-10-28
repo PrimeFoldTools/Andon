@@ -196,7 +196,7 @@ Already have a `"hooks"` block? Add the `Stop` / `UserPromptSubmit` keys *into* 
 - Per-run: `CLAIM_CHECK_ENFORCE_MODE=off` in the command (silent pass-through).
 - Permanently: remove the hook entry from `settings.json`.
 - In the **default evidence mode** (`CLAIM_CHECK_EVIDENCE` unset, blank or `log`) it is **fail-safe by design**: malformed input, a missing transcript, or any error → it passes the turn through. It never blocks because *it* broke.
-- With `CLAIM_CHECK_EVIDENCE=tool`, `both`, or any other non-blank value (read as `both`) it **fails closed** instead (section 6). A missing transcript path, a transcript that is missing or unreadable, a newest transcript record that is not valid JSON, or an internal error gives a warning in warn mode and a block in block mode. Hook input that is not JSON only ever warns. To get unstuck: set `CLAIM_CHECK_ENFORCE_MODE=warn` or `=off`, or remove `CLAIM_CHECK_EVIDENCE`.
+- With `CLAIM_CHECK_EVIDENCE=tool`, `both`, or any other non-blank value (read as `both`) it **fails closed** instead (section 6). A missing transcript path, a transcript that is missing or unreadable, a newest transcript record that ends in a newline but is not valid JSON (a last line with no newline yet is still being written and is skipped), or an internal error gives a warning in warn mode and a block in block mode. Hook input that is not JSON only ever warns. To get unstuck: set `CLAIM_CHECK_ENFORCE_MODE=warn` or `=off`, or remove `CLAIM_CHECK_EVIDENCE`.
 
 ## Tuning false-fires
 
