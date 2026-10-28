@@ -13,6 +13,11 @@ This script fails (exit 1) when:
   - an active control (experimental / test / stable) has no review_by, or its
     review_by date has passed (the todo_or_die pattern: the date is a promise to
     re-check, and the build breaks when the promise lapses);
+  - an active control's review_by is before its modified date, or more than
+    MAX_REVIEW_DAYS (365) after it (a far-off date would defeat the promise);
+  - a code fence (``` or ~~~) is never closed. Lines inside a fence are an
+    example, not the entry's own lines: they never count as a heading, a
+    **Verdict:** line or a **Control:** line;
   - a rejected defect still has an active control;
   - an id is malformed or duplicated, a date is not YYYY-MM-DD, a key is unknown,
     or a `related` link has an unknown type or points at an id that does not exist.
@@ -35,12 +40,18 @@ ACTIVE = ("experimental", "test", "stable")
 RELATION_TYPES = ("derived", "obsolete", "merged", "renamed")
 KEYS = ("id", "status", "review_by", "modified", "related")
 REQUIRED = ("id", "status", "modified")
+MAX_REVIEW_DAYS = 365
 
 ID_RE = re.compile(r"^D-\d{3}$")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 HEADING_RE = re.compile(r"^### (.+)$")
 VERDICT_RE = re.compile(r"^\*\*Verdict:\*\*\s*(.*)$")
 CONTROL_RE = re.compile(r"^\*\*Control:\*\*\s*(.*)$")
+# A fence opens with 3+ backticks or tildes (up to 3 spaces of indent; a backtick
+# fence's info string has no backtick) and closes with a run of the same character
+# at least as long, with nothing after it but spaces (CommonMark).
+FENCE_OPEN_RE = re.compile(r"^ {0,3}(`{3,}(?!.*`)|~{3,})")
+FENCE_CLOSE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})[ \t]*$")
 DASH = " — "
 
 
@@ -53,10 +64,29 @@ def _date(value):
         return None
 
 
-def split_entries(text):
-    """Return [(title, line_number, [lines])] for every `###` entry."""
-    entries = []
+def unfenced_lines(text):
+    """Return ([(line_number, line)] outside code fences, line number of a fence that
+    is never closed or None). Fence marker lines are dropped too."""
+    out, fence, fence_at = [], None, None
     for n, line in enumerate(text.splitlines(), 1):
+        if fence is None:
+            m = FENCE_OPEN_RE.match(line)
+            if m:
+                fence, fence_at = m.group(1), n
+            else:
+                out.append((n, line))
+        else:
+            m = FENCE_CLOSE_RE.match(line)
+            if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence):
+                fence = None
+    return out, (fence_at if fence is not None else None)
+
+
+def split_entries(text):
+    """Return [(title, line_number, [lines])] for every `###` entry. Lines inside a
+    code fence are left out: a fenced example is not the entry's own line."""
+    entries = []
+    for n, line in unfenced_lines(text)[0]:
         m = HEADING_RE.match(line)
         if m:
             entries.append((m.group(1).strip(), n, []))
@@ -140,6 +170,15 @@ def check_entry(title, lines, today):
                 problems.append(f"review_by {fields['review_by']} has passed (today {today}): "
                                 "re-check the control, then set a new date, promote it, "
                                 "or retire it (deprecated / withdrawn)")
+            modified = _date(fields.get("modified", ""))
+            if due is not None and modified is not None:
+                if due < modified:
+                    problems.append(f"review_by {fields['review_by']} is before modified "
+                                    f"{fields['modified']}")
+                elif (due - modified).days > MAX_REVIEW_DAYS:
+                    problems.append(f"review_by {fields['review_by']} is more than "
+                                    f"{MAX_REVIEW_DAYS} days after modified "
+                                    f"{fields['modified']}: pick a nearer review date")
     elif "review_by" in fields and _date(fields["review_by"]) is None:
         problems.append(f"review_by '{fields['review_by']}' is not a YYYY-MM-DD date")
 
@@ -152,9 +191,12 @@ def check_entry(title, lines, today):
 def check_text(text, today):
     """Return a list of problem strings for the whole ledger."""
     problems = []
+    unclosed = unfenced_lines(text)[1]
+    if unclosed is not None:
+        problems.append(f"line {unclosed}: code fence is never closed")
     entries = split_entries(text)
     if not entries:
-        return ["no ### entries found"]
+        return problems + ["no ### entries found"]
     seen, parsed = {}, []
     for title, line_no, lines in entries:
         fields, entry_problems = check_entry(title, lines, today)

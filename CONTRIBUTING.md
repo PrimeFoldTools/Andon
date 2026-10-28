@@ -21,7 +21,8 @@ minutes.
   defect -> root cause -> countermeasure -> result.
   End it with a `**Verdict:**` and a `**Control:**` line (see "How each entry is
   tracked" at the top of the ledger). A new entry usually starts as
-  `needs_validation` or `confirmed`, with status `experimental`.
+  `needs_validation` or `confirmed`, with status `experimental`. Set its
+  `review_by` no more than 365 days after its `modified` date.
 
 ## Development
 

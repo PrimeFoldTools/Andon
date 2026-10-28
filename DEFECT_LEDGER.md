@@ -33,11 +33,11 @@ A countermeasure is a control. Controls age. The risk behind one can go away, a 
 
 The path is the same as for the hooks: **warn first, block once trusted.** A control moves `experimental` → `test` → `stable` as evidence builds up. It never jumps straight to block.
 
-**review_by** is a date. Every active control (`experimental`, `test`, `stable`) has one. On that date someone re-checks the control. They then set a new date, promote it, or retire it. If the date passes with no action, `scripts/check_ledger.py` fails, and so does the test suite. A forgotten control breaks the build instead of rotting quietly.
+**review_by** is a date. Every active control (`experimental`, `test`, `stable`) has one. It falls on or after the `modified` date and no more than 365 days after it. On that date someone re-checks the control. They then set a new date, promote it, or retire it. If the date passes with no action, `scripts/check_ledger.py` fails, and so does the test suite. A forgotten control breaks the build instead of rotting quietly.
 
 **Retire, never delete.** A retired control keeps its entry with status `deprecated` or `withdrawn`. The record of why it existed is the point of the ledger.
 
-The other fields: `id` is a stable `D-NNN` number. `modified` is the date the Control line last changed. `related` links entries as `<type>:<id>`, where type is `derived` (built on that entry's control), `obsolete` (this control replaces that one), `merged` or `renamed`.
+The other fields: `id` is a stable `D-NNN` number. `modified` is the date the Control line last changed. `related` links entries as `<type>:<id>`, where type is `derived` (built on that entry's control), `obsolete` (this control replaces that one), `merged` or `renamed`. Lines inside a code fence are examples: the checker does not read them as an entry's Verdict or Control line.
 
 Run `python3 scripts/check_ledger.py` to check every entry.
 

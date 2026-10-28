@@ -10,7 +10,9 @@ of the doctrine in [`docs/THE_OPERATORS_CODE.md`](docs/THE_OPERATORS_CODE.md).
   line (`confirmed` / `needs_validation` / `rejected`, each with a reason) and a `**Control:**`
   line (`id`, `status` = `experimental` / `test` / `stable` / `deprecated` / `withdrawn`,
   `review_by`, `modified`, optional `related`). `scripts/check_ledger.py` (stdlib only) fails when
-  a value is invalid or an active control's `review_by` date has passed; the test suite runs it
+  a value is invalid or an active control's `review_by` date has passed, is before its `modified`
+  date, or is more than 365 days after it; lines inside a code fence are not read as an entry's
+  Verdict or Control line, and an unclosed fence fails. The test suite runs it
   on the real ledger, so CI goes red when a review lapses. Retired controls stay on record. All
   19 existing entries are backfilled: 6 confirmed, 13 needs_validation; 8 controls at `test`,
   11 at `experimental`, none `stable` (promotion is the maintainer's call). The first review

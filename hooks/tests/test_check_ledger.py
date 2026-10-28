@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent.parent
 SCRIPT = str(ROOT / "scripts" / "check_ledger.py")
 TODAY = "2026-10-27"
@@ -141,6 +143,68 @@ def test_related_links(tmp_path):
     badtype = _ledger(_entry("2026-10 — One"),
                       _entry("2026-10 — Two", control=second + " · related: similar:D-001"))
     assert _fails(_run(tmp_path, badtype), "must be <type>:<id>")
+
+
+# ---- review_by window: no later than 365 days after modified, never before it ----
+def _control(review_by, modified="2026-10-27", status="test"):
+    return (f"**Control:** id: D-001 · status: {status} · review_by: {review_by} · "
+            f"modified: {modified}")
+
+
+def test_far_future_review_by_fails(tmp_path):
+    r = _run(tmp_path, _ledger(_entry(control=_control("9999-12-31"))))
+    assert _fails(r, "more than 365 days after modified")
+
+
+def test_review_by_one_day_past_the_window_fails(tmp_path):
+    r = _run(tmp_path, _ledger(_entry(control=_control("2027-10-28"))))
+    assert _fails(r, "more than 365 days after modified")
+
+
+def test_review_by_at_the_window_edge_passes(tmp_path):
+    assert _ok(_run(tmp_path, _ledger(_entry(control=_control("2027-10-27")))))
+
+
+def test_review_by_before_modified_fails(tmp_path):
+    r = _run(tmp_path, _ledger(_entry(control=_control("2026-10-26"))), today="2026-10-20")
+    assert _fails(r, "is before modified")
+
+
+def test_review_by_equal_to_modified_passes(tmp_path):
+    assert _ok(_run(tmp_path, _ledger(_entry(control=_control("2026-10-27")))))
+
+
+def test_window_rules_skip_retired_controls(tmp_path):
+    # A retired control keeps its old review_by; its modified date moves on retirement.
+    for rb in ("2020-01-01", "9999-12-31"):
+        c = _control(rb, status="deprecated")
+        assert _ok(_run(tmp_path, _ledger(_entry(control=c)))), rb
+
+
+# ---- code fences: a fenced example is not the entry's own line ----
+@pytest.mark.parametrize("fence", ["```", "~~~", "```text", "~~~~"])
+def test_fenced_control_is_not_counted(tmp_path, fence):
+    # The entry's only Control line sits in a fence, so it has none of its own.
+    example = f"{fence}\n{VALID_CONTROL}\n{fence[0] * len(fence.rstrip('text'))}"
+    r = _run(tmp_path, _ledger(_entry(control=example)))
+    assert _fails(r, "exactly one **Control:** line, found 0")
+
+
+@pytest.mark.parametrize("fence", ["```", "~~~"])
+def test_fenced_example_beside_real_lines_passes(tmp_path, fence):
+    example = (f"{fence}\n**Verdict:** rejected — example\n"
+               f"**Control:** id: D-900 · status: bogus\n### Not a heading\n{fence}")
+    assert _ok(_run(tmp_path, _ledger(_entry() + "\n" + example + "\n")))
+
+
+def test_backtick_fence_is_not_closed_by_tildes(tmp_path):
+    body = _entry(control="```\n~~~\n" + VALID_CONTROL + "\n```")
+    assert _fails(_run(tmp_path, _ledger(body)), "found 0")
+
+
+def test_unclosed_fence_fails(tmp_path):
+    r = _run(tmp_path, _ledger(_entry(), "```\n" + _entry("2026-10 — Hidden")))
+    assert _fails(r, "code fence is never closed")
 
 
 # ---- the real ledger ----
