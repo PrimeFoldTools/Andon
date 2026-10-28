@@ -19,6 +19,31 @@ of the doctrine in [`docs/THE_OPERATORS_CODE.md`](docs/THE_OPERATORS_CODE.md).
   dates are 2027-01-27 (experimental) and 2027-04-27 (test). Borrowed from the Sigma rule spec,
   the OSV schema, todo_or_die and Cloudflare's security-audit-skill; see
   [stand-on-these-shoulders](docs/stand-on-these-shoulders.md).
+
+- **claim-check: transcript parsing and matcher cost.** JSONL records (the transcript and
+  the verification log) are now split on `\n` only. `str.splitlines()` also split on
+  U+2028, U+2029 and U+0085, which JSON allows raw inside a string, and Claude Code writes
+  U+2028 unescaped; a final message holding one was read as broken records and the hook
+  read an older message instead. In `tool`/`both` mode a newest record that is not valid
+  JSON now fails closed like an unreadable transcript; `log` mode still skips it. A last
+  line with no terminating newline is a record still being written and is skipped in
+  every mode, so it cannot block a turn that makes no claim. The
+  first three claim patterns use a new sentence-start anchor that is linear on long runs
+  of blank lines (16,000 newlines took about 68 s; 50,000 now take about 0.1 s) and gives
+  the same match spans as before (a seeded differential test pins this). Claim token sets
+  tokenise each sentence fragment once instead of once per claim (4,000 claims in one
+  fragment: about 4 s before, under 0.1 s now). No change to which claims are detected.
+  No message-length cap was added: the matcher is linear, and a cap that skips text
+  would give a claim a place to hide.
+
+- **claim-check: claims are read as displayed.** Unicode format characters (category Cf,
+  such as zero-width spaces, joiners, the BOM and soft hyphens) and control characters
+  other than newline and tab are removed from the final message before claim matching.
+  Before, one of them inside a claim word ("Do<zero-width space>ne.") meant the claim was
+  not detected. Code-span, quote and question checks, token binding and the phrases
+  shown in the block message all use the same cleaned text. Text without these
+  characters is checked exactly as before.
+
 - **claim-check: opt-in harness-recorded evidence** (`CLAIM_CHECK_EVIDENCE=tool|both`; default
   unchanged). In `tool` mode a done-claim is cleared only by a passing, allowlisted verification run
   (`pytest`, `make test`, …) that Claude Code recorded in this session's transcript inside the
