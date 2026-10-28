@@ -28,7 +28,7 @@ import claim_check_hook as cc  # noqa: E402
 
 SID = "33333333-4444-5555-6666-777777777777"
 INVISIBLE = {
-    "ZWSP": "​", "ZWJ": "‍", "BOM": "﻿", "WJ": "⁠", "SHY": "­",
+    "ZWSP": "\u200b", "ZWJ": "\u200d", "BOM": "\ufeff", "WJ": "\u2060", "SHY": "\xad",
     "NUL": "\x00", "VT": "\x0b", "FF": "\x0c", "ESC": "\x1b", "DEL": "\x7f", "NEL": "\x85",
 }
 PARTIAL = '{"type":"user","sessionId":"s1","mess'
@@ -88,45 +88,75 @@ def test_invisible_character_does_not_hide_claim(name, template, want):
     assert cc.find_claims(template.format(c=INVISIBLE[name])) == want
 
 
+@pytest.mark.parametrize("sep", ["\u2028", "\u2029"])
+@pytest.mark.parametrize("template,want", [
+    ("Do{c}ne.", ["Done."]),
+    ("The fix is d{c}one.", ["is done"]),
+    ("{c}Done.", ["Done."]),
+])
+def test_line_separator_inside_word_does_not_hide_claim(sep, template, want):
+    assert cc.find_claims(template.format(c=sep)) == want
+
+
+@pytest.mark.parametrize("sep", ["\u2028", "\u2029"])
+def test_line_separator_between_words_does_not_hide_claim(sep):
+    # Removing every separator would read "is<LS>done" as "isdone" and miss it.
+    assert cc.find_claims("The fix is" + sep + "done.") != []
+
+
+@pytest.mark.parametrize("name", sorted(INVISIBLE))
+def test_hidden_character_as_only_gap_does_not_hide_claim(name):
+    # "is<FF>done": removing the character gives "isdone"; reading it as a gap gives
+    # "is done". Either reading with a claim must be checked.
+    assert cc.find_claims("The fix is" + INVISIBLE[name] + "done.") != []
+
+
+@pytest.mark.parametrize("sep", ["\u2028", "\u2029"])
+def test_line_separator_between_sentences_acts_as_newline(sep):
+    assert cc.find_claims("Reading the file." + sep + "Done.") == \
+        cc.find_claims("Reading the file.\nDone.")
+    assert cc.find_claims("Is it done?" + sep + "Next step.") == []
+
+
 def test_carriage_return_inside_word_does_not_hide_claim():
     assert cc.find_claims("Do\rne.") == ["Done."]
     assert cc.find_claims("Done.\r\nNext I read the file.") == ["Done."]
 
 
 @pytest.mark.parametrize("text", [
-    "`Do​ne.`",                    # still inside a code span
-    "> Do​ne.",                     # still in a blockquote
-    "Is the fix d​one?",            # still a question
+    "`Do\u200bne.`",                    # still inside a code span
+    "> Do\u200bne.",                     # still in a blockquote
+    "Is the fix d\u200bone?",            # still a question
 ])
 def test_exemptions_still_apply_after_removal(text):
     assert cc.find_claims(text) == []
 
 
 def test_token_binding_uses_the_visible_text():
-    sets = cc._claim_token_sets("The migra​tion is d​one.")
+    sets = cc._claim_token_sets("The migra\u200btion is d\u200bone.")
     assert [set(s) for s in sets] == [{"migration"}]
 
 
 @pytest.mark.parametrize("text", [
     "", "Done.", "The fix is done.\n\nNext\tstep: read `x`.", "日本語 é — “done”",
-    "Line one line two", "> quoted\n```\ncode\n```",
+    "Line one\u2028line two", "> quoted\n```\ncode\n```",
 ])
 def test_text_without_hidden_characters_is_unchanged(text):
     assert cc._visible_text(text) == text
 
 
 def test_removal_is_idempotent():
-    s = "Do​ne.\x0b\r\nx"
+    s = "Do\u200bne.\x0b\r\nx"
     assert cc._visible_text(cc._visible_text(s)) == cc._visible_text(s) == "Done.\nx"
 
 
 @pytest.mark.parametrize("evidence", [None, "log", "tool", "both"])
 def test_hook_blocks_claim_with_zero_width_space(tmp_path, evidence):
-    t = _write(tmp_path, [_assistant("The fix is d​one.")])
+    t = _write(tmp_path, [_assistant("The fix is d\u200bone.")])
     out = _run(tmp_path, t, evidence=evidence)
     assert _blocked(out), out
     assert '"is done"' in out["reason"]        # the echoed phrase is the visible one
-    assert "​" not in out["reason"]
+    assert "\u200b" not in out["reason"]
 
 
 # ---- 2. in-flight final record ----

@@ -605,8 +605,40 @@ def _visible_text(text):
                 or (unicodedata.category(c) == "Cc" and c not in "\n\t")))
 
 
+def _is_hidden_char(c):
+    """A character that may render as nothing or as a break: Unicode format (Cf), line /
+    paragraph separator (Zl, Zp), or a control other than "\n" and "\t"."""
+    cat = unicodedata.category(c)
+    return cat in ("Cf", "Zl", "Zp") or (cat == "Cc" and c not in "\n\t")
+
+
+def _claim_reading(text):
+    """The visible text the claim checks run on.
+
+    A hidden character can stand for nothing ("Do<ZWSP>ne." is one word) or for a gap
+    ("is<FF>done", "is<LS>done": a break that some renderers show). So hidden characters
+    give the same message up to three readings:
+      1. _visible_text: format and control characters removed, U+2028/U+2029 kept as
+         breaks (the default; text without hidden characters only ever uses this one);
+      2. every hidden character removed;
+      3. every hidden character read as a gap (U+2028/U+2029 as "\n", others as " ").
+    The first reading that finds a claim is the one checked. A claim in any reading is
+    therefore never hidden. Readings 2 and 3 contain no hidden characters, so applying
+    this function again returns the same text."""
+    primary = _visible_text(text)
+    if not any(_is_hidden_char(c) for c in text) or any(_iter_claim_matches(primary)):
+        return primary
+    joined = "".join(c for c in text if not _is_hidden_char(c))
+    gapped = "".join(
+        ("\n" if c in "\u2028\u2029" else " ") if _is_hidden_char(c) else c for c in text)
+    for reading in (joined, gapped):
+        if any(_iter_claim_matches(reading)):
+            return reading
+    return primary
+
+
 def find_claims(text):
-    text = _visible_text(text)
+    text = _claim_reading(text)
     matches = []
     seen = set()
     for phrase, _s, _e in _iter_claim_matches(text):
@@ -1249,7 +1281,7 @@ def main():
         message = read_last_assistant_message(transcript_path)
     except TranscriptUnavailable as e:
         _unavailable(mode, f"the transcript could not be read: {e}")
-    message = _visible_text(message)
+    message = _claim_reading(message)
     if not message:
         emit_ok()
 
