@@ -136,6 +136,17 @@ A listed command that runs **zero** tests can still exit 0 and be credited: `pyt
 
 **What it does not do** is in the README's *Known limits*: the transcript is still a file the agent's Bash could write, a run is not tied to the claim's subject, and a passing run of a meaningless test still passes.
 
+### Which message is checked
+
+The hook checks the text of the turn's final assistant message. It gets that text in this order:
+
+1. **The hook input.** Claude Code passes the final message to Stop hooks as `last_assistant_message`. Its [hooks reference](https://code.claude.com/docs/en/hooks#stop-input) says the transcript is written asynchronously, so it may not yet hold the final message when the hook runs. When this field is a string, the hook uses it and does not read the message from the transcript. An empty string means the final response had no text, so there is no claim.
+2. **The transcript.** If the field is missing (an older Claude Code, or another harness), the hook reads the newest assistant entry in the transcript. If that entry is older than 30 seconds (`STALE_THRESHOLD_S`), it may be the previous turn, because the final message has not been written yet:
+   - `log` mode passes the turn, as before.
+   - `tool` / `both` mode re-reads the transcript every 0.1 s for up to 2 s (`STALE_RETRY_STEP_S`, `STALE_RETRY_S`). If a fresh entry appears, it is checked. If the entry is still stale after 2 s, the hook fails closed: a warning in warn mode, a block in block mode. A block holds for one turn (`stop_hook_active`).
+
+In `tool` / `both` mode the transcript is still read for the recorded verification run in both cases.
+
 ## Known limitations
 
 - The claim-check hook verifies that a **fresh verification entry exists** (or, with `CLAIM_CHECK_EVIDENCE=tool`, a recorded passing run) — it does not semantically prove the exact claim. It's a forcing function + audit trail, not cryptographic proof.
@@ -196,10 +207,10 @@ Already have a `"hooks"` block? Add the `Stop` / `UserPromptSubmit` keys *into* 
 - Per-run: `CLAIM_CHECK_ENFORCE_MODE=off` in the command (silent pass-through).
 - Permanently: remove the hook entry from `settings.json`.
 - In the **default evidence mode** (`CLAIM_CHECK_EVIDENCE` unset, blank or `log`) it is **fail-safe by design**: malformed input, a missing transcript, or any error → it passes the turn through. It never blocks because *it* broke.
-- With `CLAIM_CHECK_EVIDENCE=tool`, `both`, or any other non-blank value (read as `both`) it **fails closed** instead (section 6). A missing transcript path, a transcript that is missing or unreadable, a newest transcript record that ends in a newline but is not valid JSON (a last line with no newline yet is still being written and is skipped), or an internal error gives a warning in warn mode and a block in block mode. Hook input that is not JSON only ever warns. To get unstuck: set `CLAIM_CHECK_ENFORCE_MODE=warn` or `=off`, or remove `CLAIM_CHECK_EVIDENCE`.
+- With `CLAIM_CHECK_EVIDENCE=tool`, `both`, or any other non-blank value (read as `both`) it **fails closed** instead (section 6). A missing transcript path, a transcript that is missing or unreadable, a newest transcript record that ends in a newline but is not valid JSON (a last line with no newline yet is still being written and is skipped), a final message that is neither in the hook input nor fresh in the transcript after a 2 s wait (see *Which message is checked*), or an internal error gives a warning in warn mode and a block in block mode. Hook input that is not JSON only ever warns. To get unstuck: set `CLAIM_CHECK_ENFORCE_MODE=warn` or `=off`, or remove `CLAIM_CHECK_EVIDENCE`.
 
 ## Tuning false-fires
 
-If it fires on normal sentences, edit `COMPLETION_VERBS` at the top of `claim_check_hook.py` — remove any verb that's common in your everyday writing. The looser verbs (`functional`, `current`, `applied`, …) ship **off** in `OPT_IN_VERBS`; add them only if your domain needs them. Result-claims ("the tests pass", "CI is green") are deliberately not matched at all — see the ledger entry on why. More in [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+If it fires on normal sentences, edit `COMPLETION_VERBS` at the top of `claim_check_hook.py` — remove any verb that's common in your everyday writing. The looser verbs (`functional`, `current`, `applied`, …) ship **off** in `OPT_IN_VERBS`; add them only if your domain needs them. Result-claims inside a longer sentence ("I added the retry logic and the tests pass", "CI is green again") are deliberately not matched — see the ledger entry on why. Short whole-sentence closers are matched: "Tests pass.", "All fixed.", "Merged.", "That's fixed.", "Works now.", "Good to go." (`_SHORT_CLOSERS` in the hook). Each must start a sentence and end it, so "If all tests pass, merge" and "Tests pass when X is set" stay quiet. More in [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
 > Note: a **Stop** hook blocks with `{"decision": "block"}`. A **PreToolUse** hook uses a *different* schema (`{"hookSpecificOutput": {"permissionDecision": "deny"}}`). If you adapt this skeleton into a PreToolUse guard, switch the schema — the wrong one is a silent no-op.

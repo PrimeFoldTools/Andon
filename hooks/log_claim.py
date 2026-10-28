@@ -48,6 +48,8 @@ _STOPWORDS = frozenset({
     "fixed", "fix", "resolved", "resolve", "shipped", "ship", "live", "set",
     "wired", "implemented", "implement", "applied", "apply", "patched", "synced",
     "finished", "finish", "production", "working",
+    "merged", "pushed", "deployed", "committed", "tested", "works", "pass", "passes",
+    "passed", "passing",
     # generic dev nouns — too common to bind a specific claim on their own
     "test", "tests", "code", "file", "files", "thing", "things", "stuff",
     "work", "item", "items", "run", "ran",

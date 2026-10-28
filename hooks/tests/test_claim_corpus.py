@@ -111,7 +111,7 @@ GAINS = [
     'The change is live now.',
 ]
 
-# Wanted and still not caught, by this patch or by main. The first four are
+# Wanted and still not caught, by this patch or by main. The first three are
 # evidence-claims ("the tests pass", "CI is green"): deferred deliberately,
 # because catching them needs assertion-context exemptions, and those
 # exemptions are what produced every regression found in review — four, then
@@ -120,11 +120,17 @@ DEFERRED = [
     "I've added the retry logic and the three new tests pass.",
     'Your CI is green again.',
     'The endpoint now returns 200 and I confirmed it with curl.',
-    'The tests pass — want me to merge?',
     'According to pytest the tests pass.',
     'The test runner reports all tests pass.',
     'All tests pass on Python 3.12.',
     'The build is passing.',
+]
+
+# Moved out of DEFERRED by the short-closer pattern (2026-10-28): the sentence starts
+# with "The tests pass" and the dash ends it, so it is a whole-sentence closer. The
+# evidence-claims inside longer sentences above stay deferred.
+GAINS_SHORT_CLOSERS = [
+    'The tests pass — want me to merge?',
 ]
 
 # Fires although the claim is attributed to someone else. These fire on main
@@ -162,6 +168,11 @@ def test_recorded_gains_still_fire():
     """The detections this patch exists to add, named individually so that
     losing one names itself."""
     lost = [t for t in GAINS if not _fires(t)]
+    assert lost == [], f"gains lost: {lost}"
+
+
+def test_short_closer_gains_fire():
+    lost = [t for t in GAINS_SHORT_CLOSERS if not _fires(t)]
     assert lost == [], f"gains lost: {lost}"
 
 
