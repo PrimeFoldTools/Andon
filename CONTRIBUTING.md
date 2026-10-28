@@ -19,6 +19,10 @@ minutes.
 
   private one-off), in the four-part shape:
   defect -> root cause -> countermeasure -> result.
+  End it with a `**Verdict:**` and a `**Control:**` line (see "How each entry is
+  tracked" at the top of the ledger). A new entry usually starts as
+  `needs_validation` or `confirmed`, with status `experimental`. Set its
+  `review_by` no more than 365 days after its `modified` date.
 
 ## Development
 
@@ -27,6 +31,7 @@ Run the local checks before opening a PR:
 ```bash
 python3 -m compileall -q hooks scripts
 python3 -m pytest hooks/tests/
+python3 scripts/check_ledger.py
 ```
 
 The hooks should remain stdlib-only. If a change needs a dependency, open an

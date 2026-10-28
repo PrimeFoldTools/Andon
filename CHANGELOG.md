@@ -6,6 +6,20 @@ of the doctrine in [`docs/THE_OPERATORS_CODE.md`](docs/THE_OPERATORS_CODE.md).
 
 ## Unreleased
 
+- **Defect Ledger: verdict and control lifecycle.** Each entry now ends with a `**Verdict:**`
+  line (`confirmed` / `needs_validation` / `rejected`, each with a reason) and a `**Control:**`
+  line (`id`, `status` = `experimental` / `test` / `stable` / `deprecated` / `withdrawn`,
+  `review_by`, `modified`, optional `related`). `scripts/check_ledger.py` (stdlib only) fails when
+  a value is invalid or an active control's `review_by` date has passed, is before its `modified`
+  date, or is more than 365 days after it; lines inside a code fence are not read as an entry's
+  Verdict or Control line, and an unclosed fence fails. The test suite runs it
+  on the real ledger, so CI goes red when a review lapses. Retired controls stay on record. All
+  19 existing entries are backfilled: 6 confirmed, 13 needs_validation; 8 controls at `test`,
+  11 at `experimental`, none `stable` (promotion is the maintainer's call). The first review
+  dates are 2027-01-27 (experimental) and 2027-04-27 (test). Borrowed from the Sigma rule spec,
+  the OSV schema, todo_or_die and Cloudflare's security-audit-skill; see
+  [stand-on-these-shoulders](docs/stand-on-these-shoulders.md).
+
 - **claim-check: transcript parsing and matcher cost.** JSONL records (the transcript and
   the verification log) are now split on `\n` only. `str.splitlines()` also split on
   U+2028, U+2029 and U+0085, which JSON allows raw inside a string, and Claude Code writes

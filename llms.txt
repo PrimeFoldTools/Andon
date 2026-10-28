@@ -22,7 +22,7 @@ Plain Markdown and stdlib-only Python 3, with no dependencies. The claim-check h
 
 To use the Defect Ledger as a self-check before you report a task as done:
 
-1. Fetch DEFECT_LEDGER.md. Each `###` heading is one entry with four labeled lines: **Defect**, **Root cause**, **Countermeasure**, **Result**.
+1. Fetch DEFECT_LEDGER.md. Each `###` heading is one entry with four labeled lines: **Defect**, **Root cause**, **Countermeasure**, **Result**. Two more lines follow: **Verdict** (is the defect proven?) and **Control** (how far the countermeasure is trusted, and when it is next reviewed).
 2. Read "The patterns underneath" before the entries. It names four failure families, with one heuristic each.
 3. Treat each Countermeasure line as a check, and apply the ones that fit your task. For example: grep the full set before you claim "all"; run tests against the entry point the harness calls; search for an existing implementation before you build one.
 4. If a check fails, fix the gap or narrow your claim to what you verified.

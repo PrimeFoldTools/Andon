@@ -85,6 +85,8 @@ The response contains `continue: true` and a `systemMessage` asking for claim-sp
 
 The runnable proof is the 30-second demo above. The companion evidence is the *record*: [`DEFECT_LEDGER.md`](DEFECT_LEDGER.md) logs real defects one at a time — **defect → root cause → countermeasure → result** — where the countermeasure is a hook or test that makes the whole class hard to repeat, not a note that asks you to remember. Accumulated, not invented. Read a few entries; you'll recognize your own week.
 
+Each entry also carries a verdict (is the defect proven?) and a control status with a review-by date. A control that nobody re-checks by its date fails the test suite. Retired controls stay on record. See the ledger's opening section.
+
 ---
 
 ## Why this, and not the 20 other memory repos
@@ -118,7 +120,7 @@ andon/
 ├── hooks/               ← claim_check_hook.py (catches false "done") · auto_orient.py (loads memory at start) · log_claim.py · tests
 ├── commands/            ← ready-made slash commands: /wrap · /orient · /log-mistake
 ├── agents/              ← a starter team: researcher · auditor · memory-steward · builder · chief-of-staff
-├── scripts/             ← memory_rotate.py (keeps the index from bloating)
+├── scripts/             ← memory_rotate.py (keeps the index from bloating) · check_ledger.py (checks ledger verdicts + review-by dates)
 ├── examples/            ← a FILLED-IN sample project (not empty placeholders)
 └── docs/
     ├── THE_OPERATORS_CODE.md        ← the full doctrine: 11 laws + 5 patterns
