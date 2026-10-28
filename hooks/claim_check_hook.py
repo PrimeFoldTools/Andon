@@ -78,6 +78,7 @@ import json
 import os
 import re
 import sys
+import unicodedata
 from bisect import bisect_left, bisect_right
 from datetime import datetime, timezone
 from pathlib import Path
@@ -135,11 +136,20 @@ _CLOSURE_NOUNS = "|".join(CLOSURE_NOUNS)
 # migration." — without this the leading subject defeated both anchors.
 _SUBJECT = r"(?:(?:i|we)(?:'ve|\s+have|\s+just|\s+have\s+just)?\s+)?"
 
+# Sentence-start anchor for the first three patterns: text start, sentence punctuation
+# plus whitespace, or a line start, then any indentation on that line. It accepts the
+# same claims as the older `(?:^|(?<=[.!?])\s+|\n)\s*`, which let every line start in a
+# run of blank lines rescan the rest of the run (quadratic: 16,000 newlines took ~68 s).
+# Here a line-start attempt reads only its own line's indentation, so the scan is linear.
+# _sentence_start() maps each match back to the older start, so spans are unchanged.
+_LINE_START = r"(?:\A\s*|(?<=[.!?])\s+|^[^\S\n]*|\n[^\S\n]*)"
+_SENTENCE_START_PATTERNS = 3   # CLAIM_PATTERNS[:3] use _LINE_START
+
 CLAIM_PATTERNS = (
     # Standalone / sentence-start closure markers:
     # "Done.", "All set.", "Shipped:", "Ready — ..."
     re.compile(
-        rf"(?im)(?:^|(?<=[.!?])\s+|\n)\s*"
+        rf"(?im){_LINE_START}"
         rf"(?:done|complete|completed|ready|verified|fixed|resolved|shipped|"
         rf"implemented|finished|production[\s-]ready|all\s+set)\b"
         rf"(?:\s*(?:[.!:;]|—|-)|\s*$)"
@@ -148,7 +158,7 @@ CLAIM_PATTERNS = (
     # closure verb with no copula. ("The fix is done." is the auxiliary
     # pattern below, not this one.)
     re.compile(
-        rf"(?im)(?:^|(?<=[.!?])\s+|\n)\s*"
+        rf"(?im){_LINE_START}"
         rf"(?:(?:the|this|that)\s+)?(?:{_CLOSURE_NOUNS})\s+"
         rf"(?:done|complete|completed|finished|shipped|deployed|merged|applied|verified)\b"
         rf"(?:\s*(?:[.!:;]|—|-)|\s*$)"
@@ -162,7 +172,7 @@ CLAIM_PATTERNS = (
     # "We have fixed the tests.", "I finished the migration."). The determiner
     # requirement is what keeps "We have verified users in the table" exempt.
     re.compile(
-        rf"(?im)(?:^|(?<=[.!?])\s+|\n)\s*{_SUBJECT}"
+        rf"(?im){_LINE_START}{_SUBJECT}"
         rf"(?:shipped|fixed|verified|resolved|completed|implemented|finished)\s+"
         rf"(?:the|this|that|these|those|all|our|your|its|my)\b[^\n.!?]{{0,80}}"
     ),
@@ -219,6 +229,14 @@ def _parse_ts_as_utc(ts_str):
     return dt.timestamp()
 
 
+def _jsonl_lines(text):
+    r"""Split JSONL into records on "\n" only (a trailing "\r" is dropped). Not
+    str.splitlines(): it also breaks on U+2028, U+2029 and U+0085, which JSON allows
+    raw inside a string. Claude Code writes U+2028 unescaped, so
+    splitlines() cut such a record into pieces that do not parse."""
+    return [ln[:-1] if ln.endswith("\r") else ln for ln in text.split("\n")]
+
+
 def read_last_assistant_message(transcript_path):
     """Return the most recent assistant message text. Empty string if the
     most recent entry is older than STALE_THRESHOLD_S (transcript-flush race)."""
@@ -226,18 +244,30 @@ def read_last_assistant_message(transcript_path):
     if not p.exists():
         return ""
     try:
-        lines = p.read_text(errors="ignore").splitlines()
+        text = p.read_text(errors="ignore")
     except OSError as e:
         _unreadable(e)
         return ""
+    lines = _jsonl_lines(text)
+    # A last line with no terminating "\n" is a record the harness is still writing
+    # (the transcript-flush race). It is not a finished record, so it is not evidence
+    # either way: skip it in every mode. Only a newline-terminated record that does not
+    # parse makes the transcript unavailable below.
+    in_flight = len(lines) - 1 if not text.endswith("\n") else -1
     now_ts = datetime.now(timezone.utc).timestamp()
-    for line in reversed(lines):
-        line = line.strip()
+    for idx in range(len(lines) - 1, -1, -1):
+        line = lines[idx].strip()
         if not line:
             continue
         try:
             entry = json.loads(line)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            if idx == in_flight:
+                continue
+            # A record newer than the last assistant message does not parse, so the
+            # final message may be in it. Tool/both mode: fail closed (unavailable).
+            # Log mode: skip it and read the previous record, as before.
+            _unreadable(e)
             continue
         if entry.get("type") != "assistant":
             continue
@@ -508,27 +538,107 @@ def _iter_claim_matches(text):
     spans = _code_spans(text)
     code = ([a for a, _b in spans], [b for _a, b in spans])
     is_quoted = _blockquote_checker(text)
-    for pat in CLAIM_PATTERNS:
+    for i, pat in enumerate(CLAIM_PATTERNS):
+        floor = 0
         for m in pat.finditer(text):
+            start = (_sentence_start(text, m, floor) if i < _SENTENCE_START_PATTERNS
+                     else m.start())
+            floor = m.end()
             phrase = m.group(0).strip()
             if not phrase.endswith(_ASSERTED_END) and _ends_in_question(text, m.end()):
                 continue
-            if _in_code(code, text, m.start(), m.end()):
+            if _in_code(code, text, start, m.end()):
                 continue
-            if is_quoted(m.start()):
+            if is_quoted(start):
                 continue
-            ctx_start = max(0, m.start() - 80)
+            ctx_start = max(0, start - 80)
             ctx = text[ctx_start:min(len(text), m.end() + 80)]
-            c0, c1 = m.start() - ctx_start, m.end() - ctx_start
+            c0, c1 = start - ctx_start, m.end() - ctx_start
             # An exemption counts only if its match OVERLAPS the claim — a quotation
             # merely NEAR the claim ("As they say, \"done is done\".") must not silence it.
             if any(exm.start() < c1 and exm.end() > c0
                    for ex in EXEMPT_CONTEXT for exm in ex.finditer(ctx)):
                 continue
-            yield phrase, m.start(), m.end()
+            yield phrase, start, m.end()
+
+
+def _sentence_start(text, m, floor):
+    """The start the older anchor `(?:^|(?<=[.!?])\\s+|\\n)\\s*` gave this match.
+
+    Both anchors accept the same claims and differ only in where a match starts inside
+    the whitespace before the claim word. The older one started at the earliest point of
+    that whitespace it accepted (text start, just after . ! ?, a line start, or a "\\n"),
+    and the quote and context checks read from that start. To keep their results
+    unchanged, step back over the whitespace (not past `floor`, the end of the previous
+    match) and return the first such point. One pass over the whitespace per match."""
+    s = m.start()
+    g = m.group(0)
+    word = s + len(g) - len(g.lstrip())     # first character of the claim itself
+    a = s
+    while a > floor and text[a - 1].isspace():
+        a -= 1
+    for p in range(a, s):
+        if (p == 0 or text[p] == "\n" or text[p - 1] == "\n"
+                or (text[p - 1] in ".!?" and p < word)):
+            return p
+    return s
+
+
+def _visible_text(text):
+    """The message as a reader sees it, which is the text every claim check runs on.
+
+    Removed: Unicode format characters (category Cf: zero-width space and joiner,
+    word joiner, byte-order mark, soft hyphen and the like) and every C0/C1 control
+    character except "\n" and "\t". None of them shows as a character, so "Do<ZWSP>ne."
+    reads as "Done." and is checked as "Done.". A control is removed, not turned into a
+    space, so "D<VT>one." stays one word. A "\r" goes too ("\r\n" reads as "\n").
+    Text with none of these characters is returned unchanged. The function is idempotent,
+    so callers may apply it more than once; spans and echoed phrases all index the
+    returned text."""
+    if text.isascii():
+        if text.isprintable() or not any(
+                (c < " " and c not in "\n\t") or c == "\x7f" for c in text):
+            return text
+    return "".join(
+        c for c in text
+        if not (unicodedata.category(c) == "Cf"
+                or (unicodedata.category(c) == "Cc" and c not in "\n\t")))
+
+
+def _is_hidden_char(c):
+    """A character that may render as nothing or as a break: Unicode format (Cf), line /
+    paragraph separator (Zl, Zp), or a control other than "\n" and "\t"."""
+    cat = unicodedata.category(c)
+    return cat in ("Cf", "Zl", "Zp") or (cat == "Cc" and c not in "\n\t")
+
+
+def _claim_reading(text):
+    """The visible text the claim checks run on.
+
+    A hidden character can stand for nothing ("Do<ZWSP>ne." is one word) or for a gap
+    ("is<FF>done", "is<LS>done": a break that some renderers show). So hidden characters
+    give the same message up to three readings:
+      1. _visible_text: format and control characters removed, U+2028/U+2029 kept as
+         breaks (the default; text without hidden characters only ever uses this one);
+      2. every hidden character removed;
+      3. every hidden character read as a gap (U+2028/U+2029 as "\n", others as " ").
+    The first reading that finds a claim is the one checked. A claim in any reading is
+    therefore never hidden. Readings 2 and 3 contain no hidden characters, so applying
+    this function again returns the same text."""
+    primary = _visible_text(text)
+    if not any(_is_hidden_char(c) for c in text) or any(_iter_claim_matches(primary)):
+        return primary
+    joined = "".join(c for c in text if not _is_hidden_char(c))
+    gapped = "".join(
+        ("\n" if c in "\u2028\u2029" else " ") if _is_hidden_char(c) else c for c in text)
+    for reading in (joined, gapped):
+        if any(_iter_claim_matches(reading)):
+            return reading
+    return primary
 
 
 def find_claims(text):
+    text = _claim_reading(text)
     matches = []
     seen = set()
     for phrase, _s, _e in _iter_claim_matches(text):
@@ -602,18 +712,25 @@ def _claim_token_sets(message):
     A claim whose fragment has no content tokens (a bare "Done.") falls back to the
     whole message, so "I refactored the parser. Done." still binds on "parser". A truly
     subjectless message yields an empty set — see has_fresh_log for that (unbindable) case."""
+    message = _visible_text(message)
     msg_tokens = _content_tokens(message)
     frags = _fragment_spans(message)
     frag_ends = [fe for _fs, fe in frags]
+    frag_tokens = {}    # fragment index -> its tokens; each fragment is tokenised once
     sets = []
     for _phrase, s, e in _iter_claim_matches(message):
         # Fragments are sorted and disjoint: the ones the match touches run from the
         # first that ends after it starts (binary search, not a scan per claim).
         k, parts = bisect_right(frag_ends, s), []
         while k < len(frags) and frags[k][0] < e:
-            parts.append(message[frags[k][0]:frags[k][1]])
+            if k not in frag_tokens:
+                frag_tokens[k] = frozenset(_content_tokens(message[frags[k][0]:frags[k][1]]))
+            parts.append(frag_tokens[k])
             k += 1
-        toks = _content_tokens(" ".join(parts))
+        # Tokens never cross a fragment boundary (the old code joined parts with a
+        # space), so the union of per-fragment sets equals tokenising the joined text.
+        # Many claims in one long fragment share its set instead of re-tokenising it.
+        toks = parts[0] if len(parts) == 1 else frozenset().union(*parts)
         sets.append(toks or msg_tokens)
     if not sets:  # gate saw a claim but spans vanished (shouldn't happen) — fail closed-ish
         sets.append(msg_tokens)
@@ -638,7 +755,7 @@ def has_fresh_log(claim_token_sets, session_id, window_min=CLAIM_CHECK_FRESH_MIN
     if not CLAIM_CHECKS_LOG.exists():
         return False
     try:
-        lines = CLAIM_CHECKS_LOG.read_text().splitlines()
+        lines = _jsonl_lines(CLAIM_CHECKS_LOG.read_text())
     except OSError:
         return False
     now_ts = datetime.now(timezone.utc).timestamp()
@@ -1106,7 +1223,7 @@ def has_recorded_run(transcript_path, session_id, window_min=CLAIM_CHECK_FRESH_M
         return False
     p = Path(transcript_path).expanduser()
     try:
-        lines = p.read_text(errors="ignore").splitlines()
+        lines = _jsonl_lines(p.read_text(errors="ignore"))
     except OSError as e:
         _unreadable(e)
         return False
@@ -1164,6 +1281,7 @@ def main():
         message = read_last_assistant_message(transcript_path)
     except TranscriptUnavailable as e:
         _unavailable(mode, f"the transcript could not be read: {e}")
+    message = _claim_reading(message)
     if not message:
         emit_ok()
 
