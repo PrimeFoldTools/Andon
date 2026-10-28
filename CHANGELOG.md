@@ -6,6 +6,21 @@ of the doctrine in [`docs/THE_OPERATORS_CODE.md`](docs/THE_OPERATORS_CODE.md).
 
 ## Unreleased
 
+- **claim-check: short closers and the final message.** Short whole-sentence done-claims
+  are now detected: "All fixed.", "All done.", "Merged.", "Pushed.", "Done and tested.",
+  "That's fixed.", "Should be fixed now.", "Works now.", "Tests pass.", "Good to go.",
+  "Ready for review." and similar (`_SHORT_CLOSERS`). Each must start a sentence and end
+  it, so "If all tests pass, we can merge." and "Tests pass when X is set." stay quiet.
+  "Fixed it." / "I fixed it." now match too. On a 42-phrase survey, detection went from
+  10 to 41 claims, with 1 of 42 near-misses firing before and after (the same one). The
+  new closure words (merged, pushed, deployed, committed, tested, works, pass/passes/
+  passed/passing) are stopwords in both files, so they never bind a claim. The hook now
+  checks the final message Claude Code passes on stdin (`last_assistant_message`) when it
+  is a string, and reads the transcript only when it is not. Without it, a stale newest
+  transcript entry in `tool`/`both` mode is re-read for up to 2 s and then fails closed;
+  before, it passed silently. `log` mode is unchanged. See HOOK_INSTALL.md, "Which message
+  is checked".
+
 - **Defect Ledger: verdict and control lifecycle.** Each entry now ends with a `**Verdict:**`
   line (`confirmed` / `needs_validation` / `rejected`, each with a reason) and a `**Control:**`
   line (`id`, `status` = `experimental` / `test` / `stable` / `deprecated` / `withdrawn`,

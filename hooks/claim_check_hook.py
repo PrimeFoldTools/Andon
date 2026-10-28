@@ -31,6 +31,10 @@ USAGE
        CLAIM_CHECK_EVIDENCE=both    # both of the above
      A non-blank unrecognized value is treated as "both" (strictest), not as "log"; a
      blank value means "log". In tool/both mode an internal error fails CLOSED.
+     The message checked is the hook input's last_assistant_message when it is a string;
+     otherwise the transcript's newest assistant entry. If that entry is stale (older than
+     STALE_THRESHOLD_S), log mode passes; tool/both mode re-reads for up to STALE_RETRY_S,
+     then fails CLOSED. See HOOK_INSTALL.md, "Which message is checked".
      CLAIM_CHECK_VERIFY_COMMANDS="pytest,make test" overrides the allowlist.
 
 NOTE — this is a STOP hook; Stop hooks block with {"decision": "block"}.
@@ -78,6 +82,7 @@ import json
 import os
 import re
 import sys
+import time
 import unicodedata
 from bisect import bisect_left, bisect_right
 from datetime import datetime, timezone
@@ -92,6 +97,8 @@ CLAIM_CHECKS_LOG = Path(
 ).expanduser()
 CLAIM_CHECK_FRESH_MIN = 15      # minutes — log entries newer than this count as fresh
 STALE_THRESHOLD_S = 30          # transcript-flush race guard
+STALE_RETRY_S = 2.0             # tool/both mode: how long to wait for a stale final message
+STALE_RETRY_STEP_S = 0.1        # ... re-reading the transcript this often
 DEFAULT_MODE = "warn"           # warn | block | off  (start warn; promote to block once tuned)
 OVERLAP_MIN_TOKENS = 1          # a fresh log entry must share >=N content tokens with the claim
 
@@ -143,7 +150,33 @@ _SUBJECT = r"(?:(?:i|we)(?:'ve|\s+have|\s+just|\s+have\s+just)?\s+)?"
 # Here a line-start attempt reads only its own line's indentation, so the scan is linear.
 # _sentence_start() maps each match back to the older start, so spans are unchanged.
 _LINE_START = r"(?:\A\s*|(?<=[.!?])\s+|^[^\S\n]*|\n[^\S\n]*)"
-_SENTENCE_START_PATTERNS = 3   # CLAIM_PATTERNS[:3] use _LINE_START
+_SENTENCE_START_PATTERNS = 4   # CLAIM_PATTERNS[:4] use _LINE_START
+
+# Short closers an agent writes as a whole sentence: "All fixed.", "Merged.", "Done and
+# tested.", "That's fixed.", "Should be fixed now.", "Works now.", "Tests pass.", "Good to
+# go.", "Ready for review.". Each must START a sentence and END it (".", "!", ":", ";",
+# a dash, or the line end), so the same words inside a longer sentence stay quiet: "Once
+# it's fixed, we deploy", "If all tests pass, merge", "Tests pass when X is set", "All
+# done callbacks run", "Merged branches get deleted". A dash ends the closer only when no
+# word follows it, so "All fixed-income funds" stays quiet.
+_SHORT_DONE = (r"done|complete|completed|ready|verified|fixed|resolved|shipped|"
+               r"implemented|finished|merged|pushed|deployed|committed")
+_SHORT_CLOSERS = (
+    rf"all\s+(?:{_SHORT_DONE})",
+    r"merged|pushed|deployed|committed",
+    rf"(?:{_SHORT_DONE})\s+and\s+"
+    r"(?:tested|pushed|deployed|merged|committed|verified|shipped|done|fixed|documented)",
+    r"(?:it|that|this|everything)['\u2019]s\s+(?:(?:all|now|already)\s+)?"
+    r"(?:done|fixed|resolved|working|complete|completed|ready|merged|pushed|deployed|live|"
+    r"in\s+place)",
+    r"(?:(?:it|this|that|everything)\s+)?should\s+be\s+(?:fixed|done|resolved|working|good)",
+    r"(?:(?:it|this|everything)\s+)?works",   # not "That works." (agreement, usually)
+    r"(?:all\s+)?(?:the\s+)?tests?\s+(?:pass|passed|passing|are\s+passing)",
+    r"everything\s+(?:passes|passed)",
+    r"(?:(?:it|that|this|everything|we)['\u2019](?:s|re)\s+)?good\s+to\s+go|"
+    r"all\s+good|all\s+green|ready\s+for\s+(?:review|merge)|"
+    r"that\s+should\s+do\s+it",
+)
 
 CLAIM_PATTERNS = (
     # Standalone / sentence-start closure markers:
@@ -174,7 +207,14 @@ CLAIM_PATTERNS = (
     re.compile(
         rf"(?im){_LINE_START}{_SUBJECT}"
         rf"(?:shipped|fixed|verified|resolved|completed|implemented|finished)\s+"
-        rf"(?:the|this|that|these|those|all|our|your|its|my)\b[^\n.!?]{{0,80}}"
+        rf"(?:the|this|that|these|those|all|our|your|its|my|it)\b[^\n.!?]{{0,80}}"
+    ),
+    # Short whole-sentence closers (see _SHORT_CLOSERS): "All fixed.", "Merged.",
+    # "That's fixed.", "Tests pass.". Optional "now" before the end: "Works now."
+    re.compile(
+        rf"(?im){_LINE_START}"
+        rf"(?:{'|'.join(_SHORT_CLOSERS)})(?:\s+now)?"
+        rf"(?:\s*(?:[.!:;]|—|-(?![\w-]))|\s*$)"
     ),
     # "X is/are [already/now/fully] $VERB"
     re.compile(
@@ -217,6 +257,11 @@ class TranscriptUnavailable(Exception):
     "no claim": main() turns it into a fail-closed verdict."""
 
 
+class TranscriptStale(Exception):
+    """Tool/both mode: the newest assistant entry stayed older than STALE_THRESHOLD_S
+    for the whole retry window, so the final message is not in the transcript."""
+
+
 def _unreadable(exc):
     if _evidence_mode() != "log":
         raise TranscriptUnavailable(exc.__class__.__name__)
@@ -240,14 +285,20 @@ def _jsonl_lines(text):
 def read_last_assistant_message(transcript_path):
     """Return the most recent assistant message text. Empty string if the
     most recent entry is older than STALE_THRESHOLD_S (transcript-flush race)."""
+    return _read_last_assistant(transcript_path)[0]
+
+
+def _read_last_assistant(transcript_path):
+    """(text, stale). stale is True when the newest assistant entry is older than
+    STALE_THRESHOLD_S; text is then ""."""
     p = Path(transcript_path).expanduser()
     if not p.exists():
-        return ""
+        return "", False
     try:
         text = p.read_text(errors="ignore")
     except OSError as e:
         _unreadable(e)
-        return ""
+        return "", False
     lines = _jsonl_lines(text)
     # A last line with no terminating "\n" is a record the harness is still writing
     # (the transcript-flush race). It is not a finished record, so it is not evidence
@@ -275,20 +326,47 @@ def read_last_assistant_message(transcript_path):
         if ts_str:
             try:
                 if (now_ts - _parse_ts_as_utc(ts_str)) > STALE_THRESHOLD_S:
-                    return ""  # stale prior turn; do not block on it
+                    return "", True  # stale: a prior turn, or the final one not yet flushed
             except (ValueError, AttributeError):
                 pass
         msg = entry.get("message") or {}
         content = msg.get("content")
         if isinstance(content, str):
-            return content
+            return content, False
         if isinstance(content, list):
             return "\n".join(
                 b.get("text", "") for b in content
                 if isinstance(b, dict) and b.get("type") == "text"
-            )
-        return ""
-    return ""
+            ), False
+        return "", False
+    return "", False
+
+
+def final_message(hook_data, transcript_path):
+    """The text of the turn's final assistant message.
+
+    1. Claude Code passes it on stdin as `last_assistant_message` (Stop and SubagentStop
+       input). Its docs say the transcript is written asynchronously and may not yet hold
+       the final message when the hook runs, so a string in that field is used as is,
+       even an empty one (a final response with no text).
+    2. Otherwise (older harness, or the field missing) the transcript is read. When its
+       newest assistant entry is older than STALE_THRESHOLD_S, that entry may be the
+       previous turn because the final one has not been flushed yet. Log mode passes, as
+       before. Tool/both mode re-reads the transcript every STALE_RETRY_STEP_S for up to
+       STALE_RETRY_S; if it is still stale it raises TranscriptStale (main fails closed)."""
+    field = hook_data.get("last_assistant_message")
+    if isinstance(field, str):
+        return field
+    text, stale = _read_last_assistant(transcript_path)
+    if not stale or _evidence_mode() == "log":
+        return text
+    deadline = time.monotonic() + STALE_RETRY_S
+    while time.monotonic() < deadline:
+        time.sleep(STALE_RETRY_STEP_S)
+        text, stale = _read_last_assistant(transcript_path)
+        if not stale:
+            return text
+    raise TranscriptStale()
 
 
 # ---------- CLAIM DETECTION + EXEMPTION ----------
@@ -665,6 +743,8 @@ _STOPWORDS = frozenset({
     "fixed", "fix", "resolved", "resolve", "shipped", "ship", "live", "set",
     "wired", "implemented", "implement", "applied", "apply", "patched", "synced",
     "finished", "finish", "production", "working",
+    "merged", "pushed", "deployed", "committed", "tested", "works", "pass", "passes",
+    "passed", "passing",
     # generic dev nouns — too common to bind a specific claim on their own
     "test", "tests", "code", "file", "files", "thing", "things", "stuff",
     "work", "item", "items", "run", "ran",
@@ -1278,9 +1358,14 @@ def main():
         _unavailable(mode, f"the transcript does not exist: {transcript_path}")
 
     try:
-        message = read_last_assistant_message(transcript_path)
+        message = final_message(hook_data, transcript_path)
     except TranscriptUnavailable as e:
         _unavailable(mode, f"the transcript could not be read: {e}")
+    except TranscriptStale:
+        _unavailable(mode, f"the newest assistant message in the transcript is older than "
+                           f"{STALE_THRESHOLD_S}s after a {STALE_RETRY_S}s wait, and the "
+                           f"hook input has no last_assistant_message, so the final "
+                           f"message could not be read")
     message = _claim_reading(message)
     if not message:
         emit_ok()
