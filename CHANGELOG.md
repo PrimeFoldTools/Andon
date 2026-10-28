@@ -6,6 +6,17 @@ of the doctrine in [`docs/THE_OPERATORS_CODE.md`](docs/THE_OPERATORS_CODE.md).
 
 ## Unreleased
 
+- **Defect Ledger: verdict and control lifecycle.** Each entry now ends with a `**Verdict:**`
+  line (`confirmed` / `needs_validation` / `rejected`, each with a reason) and a `**Control:**`
+  line (`id`, `status` = `experimental` / `test` / `stable` / `deprecated` / `withdrawn`,
+  `review_by`, `modified`, optional `related`). `scripts/check_ledger.py` (stdlib only) fails when
+  a value is invalid or an active control's `review_by` date has passed; the test suite runs it
+  on the real ledger, so CI goes red when a review lapses. Retired controls stay on record. All
+  19 existing entries are backfilled: 6 confirmed, 13 needs_validation; 8 controls at `test`,
+  11 at `experimental`, none `stable` (promotion is the maintainer's call). The first review
+  dates are 2027-01-27 (experimental) and 2027-04-27 (test). Borrowed from the Sigma rule spec,
+  the OSV schema, todo_or_die and Cloudflare's security-audit-skill; see
+  [stand-on-these-shoulders](docs/stand-on-these-shoulders.md).
 - **claim-check: opt-in harness-recorded evidence** (`CLAIM_CHECK_EVIDENCE=tool|both`; default
   unchanged). In `tool` mode a done-claim is cleared only by a passing, allowlisted verification run
   (`pytest`, `make test`, …) that Claude Code recorded in this session's transcript inside the
