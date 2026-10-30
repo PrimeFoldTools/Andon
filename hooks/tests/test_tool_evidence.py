@@ -83,7 +83,7 @@ def _passing_run(cmd="python3 -m pytest hooks/tests/ -q", **kw):
 def _env(tmp_path, evidence="tool", mode="block", extra=None):
     # Hermetic: never inherit the runner's CLAIM_CHECK_* knobs or session id.
     env = {k: v for k, v in os.environ.items()
-           if not k.startswith("CLAIM_CHECK") and k != "CLAUDE_CODE_SESSION_ID"}
+           if not k.startswith("CLAIM_CHECK") and k not in ("CLAUDE_CODE_SESSION_ID", "CODEX_SESSION_ID", "CODEX_THREAD_ID")}
     env["CLAIM_CHECKS_LOG_PATH"] = str(tmp_path / "log.jsonl")
     env["CLAIM_CHECK_ENFORCE_MODE"] = mode
     if evidence is not None:

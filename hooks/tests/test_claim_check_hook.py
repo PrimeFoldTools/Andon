@@ -35,7 +35,7 @@ def _clean_env(extra=None):
     # Hermetic: never inherit the runner's CLAIM_CHECK_* knobs (incl. CLAIM_CHECK_EVIDENCE /
     # CLAIM_CHECK_VERIFY_COMMANDS) or its session id.
     env = {k: v for k, v in os.environ.items()
-           if not k.startswith("CLAIM_CHECK") and k != "CLAUDE_CODE_SESSION_ID"}
+           if not k.startswith("CLAIM_CHECK") and k not in ("CLAUDE_CODE_SESSION_ID", "CODEX_SESSION_ID", "CODEX_THREAD_ID")}
     if extra:
         env.update(extra)
     return env
