@@ -1,0 +1,6 @@
+#!/bin/sh
+# Plugin wrapper for hooks/log_claim.py. While the andon plugin is enabled, Claude Code puts
+# this bin/ folder on the Bash tool's PATH, so the agent can log a verified claim with:
+#   andon-log-claim "what I claim" "how I verified it"
+# It runs the same log_claim.py the manual install uses; arguments pass through unchanged.
+exec python3 "$(dirname "$0")/../hooks/log_claim.py" "$@"

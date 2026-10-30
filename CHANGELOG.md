@@ -6,6 +6,16 @@ of the doctrine in [`docs/THE_OPERATORS_CODE.md`](docs/THE_OPERATORS_CODE.md).
 
 ## Unreleased
 
+- **Claude Code plugin + marketplace.** The repo is now an installable plugin and a
+  single-plugin marketplace: `/plugin marketplace add PrimeFoldTools/andon`, then
+  `/plugin install andon@primefold-tools`. Adds `.claude-plugin/plugin.json`,
+  `.claude-plugin/marketplace.json`, `hooks/hooks.json` (the claim-check Stop hook in warn
+  mode and the auto-orient UserPromptSubmit hook, both run from `${CLAUDE_PLUGIN_ROOT}`), and
+  `bin/andon-log-claim`, a wrapper on the Bash `PATH` that runs `hooks/log_claim.py`. The five
+  agent briefs gain `name` / `description` frontmatter so they load as plugin agents; their
+  text is unchanged. The hook files are unchanged. The manual install still works as before.
+  The manifest version stays at 0.1.1 until a release is cut.
+
 - **claim-check: short closers and the final message.** Short whole-sentence done-claims
   are now detected: "All fixed.", "All done.", "Merged.", "Pushed.", "Done and tested.",
   "That's fixed.", "Should be fixed now.", "Works now.", "Tests pass.", "Good to go.",

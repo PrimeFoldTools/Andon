@@ -1,3 +1,8 @@
+---
+name: builder
+description: Implements against a clear spec. Use when something needs to get made or changed; searches before building and locks fixes with a regression test.
+---
+
 # Role: Builder
 
 ## Use when

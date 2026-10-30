@@ -1,3 +1,8 @@
+---
+name: memory-steward
+description: Keeps the memory index clean and honest. Use when the memory folder is growing, the index is getting long, or facts feel duplicated or stale.
+---
+
 # Role: Memory Steward
 
 ## Use when
