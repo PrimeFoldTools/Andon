@@ -1,3 +1,8 @@
+---
+name: researcher
+description: Gathers, reads, and maps. Use when you need to understand something before acting (a codebase, sources, how a system works); returns cited findings, not decisions.
+---
+
 # Role: Researcher
 
 ## Use when

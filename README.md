@@ -81,6 +81,26 @@ The response contains `continue: true` and a `systemMessage` asking for claim-sp
 
 ---
 
+## Install as a Claude Code plugin
+
+In Claude Code, run:
+
+```text
+/plugin marketplace add PrimeFoldTools/andon
+/plugin install andon@primefold-tools
+```
+
+What it installs:
+
+- **Hooks, on at once:** the claim-check Stop hook in **warn** mode, and the auto-orient UserPromptSubmit hook (it reads `memory/MEMORY.md` in your project, if there is one).
+- **Commands:** `/andon:wrap`, `/andon:orient`, `/andon:log-mistake`.
+- **Agents:** `andon:researcher`, `andon:auditor`, `andon:memory-steward`, `andon:builder`, `andon:chief-of-staff`.
+- **`andon-log-claim`:** a command on the agent's Bash `PATH` that runs `log_claim.py`. Tell your agent in `CLAUDE.md`: after you verify a done-claim, run `andon-log-claim "what I claim" "how I verified it"`.
+
+The plugin runs the same hook files as the manual install. To change the mode (`block`, `off`) or the evidence mode, use the manual install in [HOOK_INSTALL.md](HOOK_INSTALL.md) and disable the plugin. Do not run both installs at once: the hook would fire twice. Templates, docs and scripts stay in the repo; copy them as [QUICKSTART.md](QUICKSTART.md) describes.
+
+---
+
 ## The Defect Ledger — accumulated, not invented
 
 The runnable proof is the 30-second demo above. The companion evidence is the *record*: [`DEFECT_LEDGER.md`](DEFECT_LEDGER.md) logs real defects one at a time — **defect → root cause → countermeasure → result** — where the countermeasure is a hook or test that makes the whole class hard to repeat, not a note that asks you to remember. Accumulated, not invented. Read a few entries; you'll recognize your own week.
@@ -116,6 +136,8 @@ andon/
 ├── CONTRIBUTING.md      ← how to report issues, PRs, and hook examples
 ├── SECURITY.md          ← local-first security model + responsible reporting
 ├── .github/workflows/   ← CI for the Python hooks
+├── .claude-plugin/      ← Claude Code plugin manifest + single-plugin marketplace
+├── bin/                 ← andon-log-claim (plugin wrapper for hooks/log_claim.py)
 ├── templates/           ← drop-in: CLAUDE.md · MEMORY.md · LANES.md · CONTEXT.md · lane · skill · wrap
 ├── hooks/               ← claim_check_hook.py (catches false "done") · auto_orient.py (loads memory at start) · log_claim.py · tests
 ├── commands/            ← ready-made slash commands: /wrap · /orient · /log-mistake

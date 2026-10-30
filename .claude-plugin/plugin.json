@@ -1,0 +1,26 @@
+{
+  "name": "andon",
+  "displayName": "Andon",
+  "version": "0.1.1",
+  "description": "Pull the cord on a false \"done\": a claim-check Stop hook, an auto-orient memory hook, wrap/orient/log-mistake commands, and a starter agent team.",
+  "author": {
+    "name": "PrimeFoldTools",
+    "url": "https://github.com/PrimeFoldTools"
+  },
+  "homepage": "https://github.com/PrimeFoldTools/andon",
+  "repository": "https://github.com/PrimeFoldTools/andon",
+  "license": "MIT",
+  "keywords": ["hooks", "verification", "claim-check", "memory", "stop-hook"],
+  "commands": [
+    "./commands/wrap.md",
+    "./commands/orient.md",
+    "./commands/log-mistake.md"
+  ],
+  "agents": [
+    "./agents/researcher.md",
+    "./agents/auditor.md",
+    "./agents/memory-steward.md",
+    "./agents/builder.md",
+    "./agents/chief-of-staff.md"
+  ]
+}
