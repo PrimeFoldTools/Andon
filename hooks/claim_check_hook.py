@@ -50,8 +50,9 @@ KNOWN LIMITS (binding is a forcing function, not a cryptographic guarantee):
     and degrades to a same-session freshness floor (still stronger than global freshness).
   - Two claims in the SAME sentence share that sentence's subject tokens (claims in
     DIFFERENT sentences are bound separately).
-  - log_claim.py records the session from CLAUDE_CODE_SESSION_ID (set by Claude Code). Under
-    a harness that does not set it, entries are session-less and cannot clear a session-bound
+  - log_claim.py records the session from CLAUDE_CODE_SESSION_ID (set by Claude Code) or
+    CODEX_SESSION_ID / CODEX_THREAD_ID (set by Codex CLI). Under a harness that sets none of
+    them, entries are session-less and cannot clear a session-bound
     claim — the verification must run in the same session that makes the claim.
   - CLAIM_CHECK_EVIDENCE=tool reads the transcript, which the agent's own Bash can still
     append to: forging a passing run is possible — deliberate, and the call that writes it
@@ -1351,10 +1352,17 @@ def main():
         emit_ok()  # prevent re-block loop
 
     transcript_path = hook_data.get("transcript_path")
-    if not transcript_path:
+    # Codex CLI documents `transcript_path` as "string or null" but always passes the final
+    # message as `last_assistant_message` on Stop. In log mode the message is all the check
+    # needs, so a null transcript no longer skips the check. Tool/both mode still needs the
+    # transcript and fails closed as before. Claude Code always sends a transcript path, so
+    # its behaviour is unchanged.
+    message_only = (not transcript_path and _evidence_mode() == "log"
+                    and isinstance(hook_data.get("last_assistant_message"), str))
+    if not transcript_path and not message_only:
         _unavailable(mode, "the hook input named no transcript")
 
-    if not Path(transcript_path).expanduser().exists():
+    if not message_only and not Path(transcript_path).expanduser().exists():
         _unavailable(mode, f"the transcript does not exist: {transcript_path}")
 
     try:
@@ -1376,7 +1384,8 @@ def main():
 
     # Prefer the session id the harness passes on stdin; fall back to the transcript
     # filename stem (verified to equal CLAUDE_CODE_SESSION_ID, which log_claim.py stamps).
-    session_id = hook_data.get("session_id") or Path(transcript_path).stem
+    session_id = hook_data.get("session_id") or (Path(transcript_path).stem
+                                                  if transcript_path else "")
     evidence = _evidence_mode()
     log_ok = run_ok = True
     if evidence in ("log", "both"):

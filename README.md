@@ -99,6 +99,40 @@ What it installs:
 
 The plugin runs the same hook files as the manual install. To change the mode (`block`, `off`) or the evidence mode, use the manual install in [HOOK_INSTALL.md](HOOK_INSTALL.md) and disable the plugin. Do not run both installs at once: the hook would fire twice. Templates, docs and scripts stay in the repo; copy them as [QUICKSTART.md](QUICKSTART.md) describes.
 
+## Install as a Codex plugin
+
+In a terminal, run:
+
+```bash
+codex plugin marketplace add PrimeFoldTools/andon
+codex plugin add andon@primefold-tools
+```
+
+Then start `codex`, type `/hooks`, review the two Andon hooks and trust them. Codex does not run a plugin's hooks until you trust them, and it asks again if a hook changes.
+
+What it installs:
+
+- **Hooks:** the same `hooks/hooks.json` as the Claude Code plugin: the claim-check Stop hook in **warn** mode and the auto-orient UserPromptSubmit hook.
+- **Skills:** `andon:orient` and `andon:wrap` (Codex turns `commands/orient.md` and `commands/wrap.md` into skills by itself), and `andon:log-mistake`.
+- **No agents:** Codex plugins have no agent files. The `agents/*.md` briefs still work as text you paste.
+
+To log a verified claim, tell your agent in `AGENTS.md` to run `python3 ~/.codex/plugins/cache/primefold-tools/andon/<version>/hooks/log_claim.py "what I claim" "how I verified it"`. Under Codex, `log_claim.py` stamps the session from `CODEX_SESSION_ID`, so the entry clears that session's claim. The log lives in `~/.claude/state/claim_checks/` by default; Codex's `workspace-write` sandbox may block writes outside your project. Set `CLAIM_CHECKS_LOG_PATH` to a file inside the project when you start `codex`, so the hook and the agent use the same file.
+
+Limits under Codex (tested with codex-cli 0.153.4):
+
+- `codex exec` prints `hook: Stop Completed`, but it does not show the hook's warning text. The verdict is the same as in Claude Code: replaying the real Codex Stop input through the hook gives the warning without a log entry and a pass with one.
+- `CLAIM_CHECK_EVIDENCE=tool` and `both` read Claude Code's transcript format only. Under Codex they always warn. Keep the default `log` evidence.
+- The `andon-log-claim` command is not known to be on the Codex agent's `PATH`. Use the full path above.
+
+## Works with
+
+| App | How | Hooks |
+|---|---|---|
+| Claude Code | plugin (above) | yes |
+| Codex CLI | plugin (above) | yes, after you trust them in `/hooks` |
+| Open models | run Claude Code or Codex against a local model | the same as that app |
+| Cursor, Cline, Windsurf, Aider | copy the templates by hand | depends on the app; not tested |
+
 ---
 
 ## The Defect Ledger — accumulated, not invented
@@ -137,6 +171,8 @@ andon/
 ├── SECURITY.md          ← local-first security model + responsible reporting
 ├── .github/workflows/   ← CI for the Python hooks
 ├── .claude-plugin/      ← Claude Code plugin manifest + single-plugin marketplace
+├── .codex-plugin/       ← Codex plugin manifest (Codex reads the same marketplace file)
+├── codex/skills/        ← log-mistake skill for Codex
 ├── bin/                 ← andon-log-claim (plugin wrapper for hooks/log_claim.py)
 ├── templates/           ← drop-in: CLAUDE.md · MEMORY.md · LANES.md · CONTEXT.md · lane · skill · wrap
 ├── hooks/               ← claim_check_hook.py (catches false "done") · auto_orient.py (loads memory at start) · log_claim.py · tests

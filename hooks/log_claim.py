@@ -11,8 +11,9 @@ claim doesn't get blocked by a missing file/dir. Override the location with the
 CLAIM_CHECKS_LOG_PATH env var (must match the hook's).
 
 Each entry also stamps:
-  - session_id — from CLAUDE_CODE_SESSION_ID (the current agent session), so one
-    session's log cannot alibi another session's claim on a shared $HOME.
+  - session_id — from CLAUDE_CODE_SESSION_ID (Claude Code) or, when that is unset,
+    CODEX_SESSION_ID / CODEX_THREAD_ID (Codex CLI), so one session's log cannot alibi
+    another session's claim on a shared $HOME.
   - claim_fingerprint — content tokens of the claim (subject nouns, closure verbs
     stopworded), so the hook can require a fresh entry that plausibly refers to the
     specific claim being made rather than accepting any recent entry. See issue #2.
@@ -68,6 +69,18 @@ def _fingerprint(*texts):
     return " ".join(sorted(_content_tokens(" ".join(t for t in texts if t))))
 
 
+def _session_id():
+    """The current agent session id. Claude Code sets CLAUDE_CODE_SESSION_ID. Codex CLI
+    sets CODEX_SESSION_ID (and CODEX_THREAD_ID, the same value) in the shell its agent
+    runs commands in; that value equals the `session_id` Codex passes to the Stop hook.
+    CLAUDE_CODE_SESSION_ID wins when both are set, so Claude Code behaviour is unchanged."""
+    for var in ("CLAUDE_CODE_SESSION_ID", "CODEX_SESSION_ID", "CODEX_THREAD_ID"):
+        val = os.environ.get(var, "")
+        if val:
+            return val
+    return ""
+
+
 def main():
     claim = sys.argv[1] if len(sys.argv) > 1 else ""
     verification = sys.argv[2] if len(sys.argv) > 2 else ""
@@ -83,7 +96,7 @@ def main():
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "claim": claim,
         "verification": verification,
-        "session_id": os.environ.get("CLAUDE_CODE_SESSION_ID", ""),
+        "session_id": _session_id(),
         "claim_fingerprint": _fingerprint(claim, verification),
     }
     with CLAIM_CHECKS_LOG.open("a", encoding="utf-8") as f:

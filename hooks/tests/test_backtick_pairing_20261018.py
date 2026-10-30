@@ -399,7 +399,7 @@ def test_hook_blocks_claim_between_two_inline_spans(tmp_path):
                                  "I updated `a.py`. The migration is done. Also touched `b.py`."}]},
     }) + "\n")
     env = {k: v for k, v in os.environ.items()
-           if not k.startswith("CLAIM_CHECK") and k != "CLAUDE_CODE_SESSION_ID"}
+           if not k.startswith("CLAIM_CHECK") and k not in ("CLAUDE_CODE_SESSION_ID", "CODEX_SESSION_ID", "CODEX_THREAD_ID")}
     env.update({"CLAIM_CHECK_ENFORCE_MODE": "block",
                 "CLAIM_CHECKS_LOG_PATH": str(tmp_path / "log.jsonl")})
     r = subprocess.run([sys.executable, HOOK], input=json.dumps({"transcript_path": str(p)}),

@@ -52,7 +52,7 @@ def _write(tmp_path, entries, tail=""):
 
 def _run(tmp_path, transcript, evidence=None, mode="block"):
     env = {k: v for k, v in os.environ.items()
-           if not k.startswith("CLAIM_CHECK") and k != "CLAUDE_CODE_SESSION_ID"}
+           if not k.startswith("CLAIM_CHECK") and k not in ("CLAUDE_CODE_SESSION_ID", "CODEX_SESSION_ID", "CODEX_THREAD_ID")}
     env["CLAIM_CHECKS_LOG_PATH"] = str(tmp_path / "log.jsonl")
     env["CLAIM_CHECK_ENFORCE_MODE"] = mode
     if evidence is not None:

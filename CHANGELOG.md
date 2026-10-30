@@ -6,6 +6,19 @@ of the doctrine in [`docs/THE_OPERATORS_CODE.md`](docs/THE_OPERATORS_CODE.md).
 
 ## Unreleased
 
+- **Codex CLI plugin.** `codex plugin marketplace add PrimeFoldTools/andon`, then
+  `codex plugin add andon@primefold-tools`, then trust the two hooks in `/hooks`. Adds
+  `.codex-plugin/plugin.json` (it points at the same `hooks/hooks.json`; Codex reads the
+  existing `.claude-plugin/marketplace.json`) and a `log-mistake` skill in `codex/skills/`.
+  Codex turns `commands/orient.md` and `commands/wrap.md` into skills by itself. Two small
+  compatibility fixes, tested against hook input captured from real `codex exec` runs
+  (codex-cli 0.153.4): `log_claim.py` stamps the session from `CODEX_SESSION_ID` /
+  `CODEX_THREAD_ID` when `CLAUDE_CODE_SESSION_ID` is unset (before, every Codex log entry
+  was session-less and could never clear a claim), and in log evidence mode the Stop hook
+  checks `last_assistant_message` even when `transcript_path` is null (Codex allows a null
+  path; before, the check was skipped). Claude Code behaviour is unchanged: it always sends
+  a transcript path, and `CLAUDE_CODE_SESSION_ID` still wins.
+
 - **Claude Code plugin + marketplace.** The repo is now an installable plugin and a
   single-plugin marketplace: `/plugin marketplace add PrimeFoldTools/andon`, then
   `/plugin install andon@primefold-tools`. Adds `.claude-plugin/plugin.json`,
