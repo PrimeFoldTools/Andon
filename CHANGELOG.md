@@ -6,6 +6,18 @@ of the doctrine in [`docs/THE_OPERATORS_CODE.md`](docs/THE_OPERATORS_CODE.md).
 
 ## Unreleased
 
+- **Security: `auto_orient.py` no longer loads a MEMORY.md from outside the project.**
+  A cloned repo could ship `memory/MEMORY.md` (or `MEMORY.md`, or the `memory/` folder) as
+  a symlink to a file elsewhere on disk, and the hook injected up to 8,000 bytes of it into
+  the agent's context as "Project memory". The hook now skips a project memory file that is
+  a symlink, whose real path is outside the project folder, or that is not a regular file
+  (it opens with `O_NOFOLLOW | O_NONBLOCK`, so a FIFO cannot hang it). It reads only the
+  byte cap plus one byte, not the whole file. Refusals inject nothing and print nothing.
+  `AUTO_ORIENT_MEMORY_PATH` is set by you, so it may still point anywhere. Once-per-session
+  markers now go in a private `0700` folder (`<tmp>/andon-auto-orient-<uid>/`), are created
+  `0600` without following symlinks, and markers older than 7 days are deleted. Tests:
+  `hooks/tests/test_auto_orient_symlink_20261105.py`.
+
 - **Codex CLI plugin.** `codex plugin marketplace add PrimeFoldTools/andon`, then
   `codex plugin add andon@primefold-tools`, then trust the two hooks in `/hooks`. Adds
   `.codex-plugin/plugin.json` (it points at the same `hooks/hooks.json`; Codex reads the
