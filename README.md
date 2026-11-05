@@ -252,7 +252,7 @@ The ledger holds failure modes someone has hit before, so a new one won't be in 
 
 ## Want more checks?
 
-By default, Andon's hook asks one question: does a "done" have a recent same-session log entry that shares words with it? The Verification Kit, three paid Stop hooks for Claude Code, asks three others. Does the log hold proof text (an exit code, commit id, test count or HTTP status)? Does each hard number appear in the session's record? Does the message narrate more tool actions than it made? All three warn by default. $27 one-time, 30-day refund: [primefold.tools/built.html](https://primefold.tools/built.html).
+By default, Andon's hook asks one question: does a "done" have a recent same-session log entry that shares words with it? Andon also has a block mode and an optional mode that checks for a passing run the harness recorded. The Verification Kit, three paid Stop hooks for Claude Code, asks three others. Does the log hold proof text (an exit code, commit id, test count or HTTP status)? Does each hard number appear in the session's record? Does the message narrate more tool actions than it made? All three warn by default. $27 one-time, 30-day refund: [primefold.tools/built.html](https://primefold.tools/built.html).
 
 ---
 
