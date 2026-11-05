@@ -36,3 +36,4 @@ The ledger covers failure modes someone has hit before, so clearing it does not 
 - [Incident 001](https://raw.githubusercontent.com/PrimeFoldTools/andon/main/incidents/001-configured-is-not-running.md): Three custom hooks that were configured and passed their tests, but failed when the harness invoked them as direct commands.
 - [Troubleshooting](https://raw.githubusercontent.com/PrimeFoldTools/andon/main/TROUBLESHOOTING.md): When a hook doesn't fire or fires too often.
 - [Contributing](https://raw.githubusercontent.com/PrimeFoldTools/andon/main/CONTRIBUTING.md): How to add a ledger entry in the same four-part shape.
+- [Verification Kit](https://primefold.tools/built.html): Paid add-on, $27. Three Stop hooks for Claude Code: a claim-check that wants proof text in the log, a check for hard numbers missing from the session record, and a check for a message that narrates more tool actions than it made. Warn mode by default.
