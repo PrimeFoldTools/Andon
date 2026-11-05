@@ -250,6 +250,12 @@ The ledger holds failure modes someone has hit before, so a new one won't be in 
 
 ---
 
+## Want more checks?
+
+By default, Andon's hook asks one question: does a "done" have a recent same-session log entry that shares words with it? The Verification Kit, three paid Stop hooks for Claude Code, asks three others. Does the log hold proof text (an exit code, commit id, test count or HTTP status)? Does each hard number appear in the session's record? Does the message narrate more tool actions than it made? All three warn by default. $27 one-time, 30-day refund: [primefold.tools/built.html](https://primefold.tools/built.html).
+
+---
+
 ## Who made this / staying in touch
 
 I came up in manufacturing — 15 years, up to production manager — where the discipline was Lean and Six Sigma: you investigate why a defect occurred and put a countermeasure in place. Now I run my own work on a fleet of AI agents, and when the same mistakes kept recurring I ported that discipline to them. This repo is that system, stripped of my private work — it stands on a lot of [other people's tools](docs/stand-on-these-shoulders.md).
