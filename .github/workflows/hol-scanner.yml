@@ -1,0 +1,30 @@
+name: HOL Plugin Scanner
+
+# Runs the same pinned scanner the awesome-codex-plugins catalog uses, so a
+# score regression shows up on the PR instead of in the catalog listing.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: HOL Plugin Scanner
+        uses: hashgraph-online/ai-plugin-scanner-action@caba2e96aa8ad2feb6cf6fca52442b52e22e779f # v1.2.635
+        with:
+          plugin_dir: "."
+          mode: scan
+          min_score: 100
+          fail_on_severity: none
+          format: text
