@@ -12,7 +12,9 @@ permissions:
 jobs:
   python:
     name: Python ${{ matrix.python-version }}
-    runs-on: ubuntu-latest
+    # Ubuntu 26.04 (ubuntu-latest) has no Python 3.9; keep 3.9 tested on 24.04
+    # because macOS still ships 3.9 as /usr/bin/python3.
+    runs-on: ${{ matrix.python-version == '3.9' && 'ubuntu-24.04' || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
