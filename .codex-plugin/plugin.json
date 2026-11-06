@@ -24,9 +24,21 @@
     "longDescription": "A Stop hook that warns when the agent's final message claims work is done without a fresh verification record, a UserPromptSubmit hook that loads memory/MEMORY.md once per session, the wrap and orient commands (Codex turns commands/*.md into skills), and a log-mistake skill.",
     "developerName": "PrimeFoldTools",
     "category": "Productivity",
-    "capabilities": [],
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
     "defaultPrompt": [
       "Orient: read memory/MEMORY.md and tell me where things stand"
+    ],
+    "websiteURL": "https://github.com/PrimeFoldTools/Andon",
+    "privacyPolicyURL": "https://github.com/PrimeFoldTools/Andon/blob/main/PRIVACY.md",
+    "termsOfServiceURL": "https://github.com/PrimeFoldTools/Andon/blob/main/TERMS.md",
+    "brandColor": "#EB1A1B",
+    "composerIcon": "./assets/icon.png",
+    "logo": "./assets/logo.png",
+    "screenshots": [
+      "./assets/screenshot1.png"
     ]
   }
 }

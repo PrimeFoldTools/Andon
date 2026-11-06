@@ -26,7 +26,7 @@ import pytest
 
 HOOKS = Path(__file__).resolve().parent.parent
 HOOK = str(HOOKS / "auto_orient.py")
-SECRET = "TOP-SECRET-OUTSIDE-FILE-CONTENT"
+OUTSIDE_MARKER = "TOP-SECRET-OUTSIDE-FILE-CONTENT"
 
 
 def _env(tmp_path, extra=None):
@@ -54,7 +54,7 @@ def _run(tmp_path, cwd, sid="s1", extra=None):
 def _outside(tmp_path):
     out = tmp_path / "outside"
     out.mkdir()
-    (out / "creds").write_text(f"# MEMORY\n{SECRET}\n")
+    (out / "creds").write_text(f"# MEMORY\n{OUTSIDE_MARKER}\n")
     return out
 
 
@@ -73,7 +73,7 @@ def test_symlinked_memory_file_to_outside_is_not_injected(tmp_path):
     (proj / "memory" / "MEMORY.md").symlink_to(out / "creds")
     stdout = _run(tmp_path, proj)
     assert stdout == ""
-    assert SECRET not in stdout
+    assert OUTSIDE_MARKER not in stdout
 
 
 def test_symlinked_root_memory_file_to_outside_is_not_injected(tmp_path):
@@ -89,13 +89,13 @@ def test_relative_symlink_escape_is_not_injected(tmp_path):
     proj = _proj(tmp_path)
     (proj / "memory").mkdir()
     os.symlink("../../outside/creds", proj / "memory" / "MEMORY.md")
-    assert (proj / "memory" / "MEMORY.md").read_text().find(SECRET) >= 0  # link is live
+    assert (proj / "memory" / "MEMORY.md").read_text().find(OUTSIDE_MARKER) >= 0  # link is live
     assert _run(tmp_path, proj) == ""
 
 
 def test_symlinked_parent_dir_escape_is_refused(tmp_path):
     out = _outside(tmp_path)
-    (out / "MEMORY.md").write_text(f"# MEMORY\n{SECRET}\n")
+    (out / "MEMORY.md").write_text(f"# MEMORY\n{OUTSIDE_MARKER}\n")
     proj = _proj(tmp_path)
     (proj / "memory").symlink_to(out, target_is_directory=True)
     assert (proj / "memory" / "MEMORY.md").is_file()  # positive control: path resolves
@@ -122,7 +122,7 @@ def test_bad_link_falls_through_to_safe_root_file(tmp_path):
     (proj / "memory" / "MEMORY.md").symlink_to(out / "creds")
     (proj / "MEMORY.md").write_text("# MEMORY\n- real root fact\n")
     ctx = json.loads(_run(tmp_path, proj))["hookSpecificOutput"]["additionalContext"]
-    assert "real root fact" in ctx and SECRET not in ctx
+    assert "real root fact" in ctx and OUTSIDE_MARKER not in ctx
 
 
 # --- A1: normal files still work -----------------------------------------------------
@@ -151,7 +151,7 @@ def test_user_override_path_may_live_outside_project(tmp_path):
     out = _outside(tmp_path)
     proj = _proj(tmp_path)
     stdout = _run(tmp_path, proj, extra={"AUTO_ORIENT_MEMORY_PATH": str(out / "creds")})
-    assert SECRET in stdout  # the user's own env var is trusted
+    assert OUTSIDE_MARKER in stdout  # the user's own env var is trusted
 
 
 # --- A1: read only the cap -----------------------------------------------------------
