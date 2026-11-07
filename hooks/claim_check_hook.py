@@ -904,6 +904,7 @@ def has_fresh_log(claim_token_sets, session_id, window_min=CLAIM_CHECK_FRESH_MIN
 # forging code can hide inside a script that recorded call runs. It is not impossible.
 EVIDENCE_MODES = ("log", "tool", "both")
 SHELL_TOOLS = ("Bash",)  # only the Bash tool's record shape has been verified
+EDIT_TOOLS = ("Edit", "MultiEdit", "Write", "NotebookEdit")  # an edit after a run stales it
 
 # Command-line prefixes that count as verification, compared word-by-word. The first
 # word is compared by basename (".venv/bin/pytest" == "pytest") and every "pythonX.Y"
@@ -1295,11 +1296,28 @@ def _scan_entry(entry, session_id, prefixes, uses, cutoff, now_ts):
     return False
 
 
+def _is_file_edit(entry, session_id):
+    """True when this entry is an assistant file-edit tool call from this session. Any
+    attempt counts, even one that later failed (fails closed). Sidechain edits count too:
+    a subagent's edit changes the same files."""
+    if not isinstance(entry, dict) or entry.get("type") != "assistant":
+        return False
+    if entry.get("sessionId") != session_id:
+        return False
+    msg = entry.get("message")
+    content = msg.get("content") if isinstance(msg, dict) else None
+    if not isinstance(content, list):
+        return False
+    return any(isinstance(b, dict) and b.get("type") == "tool_use"
+               and b.get("name") in EDIT_TOOLS for b in content)
+
+
 def has_recorded_run(transcript_path, session_id, window_min=CLAIM_CHECK_FRESH_MIN):
     """True if the harness-written transcript holds a PASSING allowlisted verification
-    run from this session, finished inside the freshness window. Fails closed: anything
-    missing, malformed, cross-session, sidechain, stale, future-dated, errored,
-    interrupted, backgrounded, timed-out or reinterpreted is not credited."""
+    run from this session, finished inside the freshness window, with no file-edit tool
+    call after it. Fails closed: anything missing, malformed, cross-session, sidechain,
+    stale, future-dated, errored, interrupted, backgrounded, timed-out or reinterpreted is
+    not credited, and an edit after the last passing run cancels that run's credit."""
     if not session_id or not isinstance(session_id, str):
         return False
     p = Path(transcript_path).expanduser()
@@ -1312,13 +1330,18 @@ def has_recorded_run(transcript_path, session_id, window_min=CLAIM_CHECK_FRESH_M
     now_ts = datetime.now(timezone.utc).timestamp()
     cutoff = now_ts - (window_min * 60)
     uses = {}  # tool_use id -> command, for main-thread verification calls in this session
+    credited = False  # a passing run seen, and no file edit since (transcript order)
     for line in lines:
         try:
-            if _scan_entry(json.loads(line), session_id, prefixes, uses, cutoff, now_ts):
-                return True
+            entry = json.loads(line)
+            if _is_file_edit(entry, session_id):
+                credited = False  # the run predates this edit: it no longer proves anything
+                uses.clear()  # a run started before the edit cannot prove it either
+            if _scan_entry(entry, session_id, prefixes, uses, cutoff, now_ts):
+                credited = True
         except Exception:  # one malformed line must not decide the gate either way
             continue
-    return False
+    return credited
 
 
 # ---------- MAIN ----------

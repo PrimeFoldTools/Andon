@@ -96,6 +96,7 @@ By default the evidence is the agent's own `log_claim.py` line. The agent being 
 2. Its `input.command` — the command line as the harness recorded it — matches the grammar below.
 3. Its result is a `tool_result` on a later `user` entry with the same id, `is_error: false`, `interrupted: false`, and none of the three markers real transcripts put on a result that looks green without being a finished run: `backgroundTaskId` (the call was backgrounded, including auto-backgrounding), `timedOutAfterMs` (it hit the tool timeout), `returnCodeInterpretation` (a nonzero exit reinterpreted as success).
 4. The result's timestamp is inside the freshness window: the `CLAIM_CHECK_FRESH_MIN` constant in the hook file (15 minutes; edit the constant to change it — it is not an environment variable).
+5. No file edit comes after it. An `Edit`, `MultiEdit`, `Write` or `NotebookEdit` call with this session's `sessionId`, later in the transcript than the passing run, cancels that run's credit until a new passing run follows. A run started before the edit does not count either, even if its result lands after it. Any attempt counts, including a failed edit and a subagent's (sidechain) edit. A file changed through `Bash` (`sed -i`, a script) is not seen.
 
 **The grammar.** The harness records the exit status of the *whole* command line, so the hook credits only lines whose status is the verification's own. Rather than parse arbitrary shell, it accepts exactly this shape and refuses everything else:
 

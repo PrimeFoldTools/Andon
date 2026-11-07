@@ -6,6 +6,16 @@ of the doctrine in [`docs/THE_OPERATORS_CODE.md`](docs/THE_OPERATORS_CODE.md).
 
 ## Unreleased
 
+- **Tool evidence mode: a test run from before the last edit no longer counts.** With
+  `CLAIM_CHECK_EVIDENCE=tool` or `both`, a passing run was credited even when the agent
+  edited a file after it, then claimed "all tests pass". Now an `Edit`, `MultiEdit`,
+  `Write` or `NotebookEdit` call in the same session after the last passing run cancels
+  that run's credit until the tests run again. A run started before the edit does not count
+  either, even if it finishes after it. Any edit attempt counts, including a failed
+  one and a subagent's. Files changed through Bash (`sed -i`, a script) are still not
+  seen. Default `log` mode is unchanged. Tests:
+  `hooks/tests/test_edit_after_run_stale_20261107.py`.
+
 - **Security: `auto_orient.py` no longer loads a MEMORY.md from outside the project.**
   A cloned repo could ship `memory/MEMORY.md` (or `MEMORY.md`, or the `memory/` folder) as
   a symlink to a file elsewhere on disk, and the hook injected up to 8,000 bytes of it into
