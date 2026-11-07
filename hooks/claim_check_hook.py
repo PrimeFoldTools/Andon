@@ -905,6 +905,24 @@ def has_fresh_log(claim_token_sets, session_id, window_min=CLAIM_CHECK_FRESH_MIN
 EVIDENCE_MODES = ("log", "tool", "both")
 SHELL_TOOLS = ("Bash",)  # only the Bash tool's record shape has been verified
 EDIT_TOOLS = ("Edit", "MultiEdit", "Write", "NotebookEdit")  # an edit after a run stales it
+# A doc edit after a run does not stale it (README, CHANGELOG, notes). Kept narrow: .txt is
+# not a doc (requirements.txt, CMakeLists.txt). Tests that read Markdown are not protected.
+_DOC_SUFFIXES = (".md", ".markdown", ".rst")
+_DOC_NAMES = frozenset(("LICENSE", "NOTICE", "AUTHORS", "COPYING"))
+# Bash commands that change files. Matched on the raw command line; quoted text is blanked
+# first for the redirect check only. Errs toward "edit" (an extra rerun, never a free pass).
+_BASH_EDIT = re.compile(
+    r"\bsed\b[^|;&\n]*\s-(?:[a-zA-Z]*i|-in-place)"
+    r"|\bperl\b[^|;&\n]*\s-[a-zA-Z]*i"
+    r"|\btee\b"
+    r"|\bgit\s+(?:checkout\b[^|;&\n]*\s--(?:\s|$)|restore\b|reset\s+--hard\b|stash\s+(?:pop|apply)\b"
+    r"|revert\b|apply\b|am\b|cherry-pick\b|merge\b|pull\b|rebase\b)"
+    r"|(?:^|[\s;&|(])patch\b"
+    r"|\b(?:write_text|write_bytes|writeFile(?:Sync)?)\s*\("
+    r"|\bopen\([^)]*['\"](?:[wax]|r\+)[bt+]*['\"]")
+_QUOTED = re.compile(r"'[^']*'|\"(?:\\.|[^\"\\])*\"")
+_REDIRECT = re.compile(r"(?:&>>?|[0-9]*>>?\|?)(?!&)\s*([^\s;&|<>()]*)")
+_SCRATCH_TARGETS = ("/dev/", "/tmp/", "/private/tmp/", "/var/folders/", "$TMPDIR", "${TMPDIR")
 
 # Command-line prefixes that count as verification, compared word-by-word. The first
 # word is compared by basename (".venv/bin/pytest" == "pytest") and every "pythonX.Y"
@@ -1296,10 +1314,34 @@ def _scan_entry(entry, session_id, prefixes, uses, cutoff, now_ts):
     return False
 
 
+def _is_doc_path(path):
+    if not isinstance(path, str) or not path.strip():
+        return False  # no path: cannot tell, so it counts as a code edit
+    name = path.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    return name.lower().endswith(_DOC_SUFFIXES) or name.upper() in _DOC_NAMES
+
+
+def _bash_edits(command):
+    """True when a Bash command line changes a file: sed -i, tee, a git command that
+    rewrites the tree, a script write, or a redirect into a non-scratch path."""
+    if not isinstance(command, str):
+        return False
+    if _BASH_EDIT.search(command):
+        return True
+    for m in _REDIRECT.finditer(_QUOTED.sub("''", command)):
+        target = m.group(1)
+        if not target or target.startswith("="):
+            continue  # no file target (>&2, >(cmd)) or a comparison (>=)
+        if ".." in target or not target.startswith(_SCRATCH_TARGETS):
+            return True
+    return False
+
+
 def _is_file_edit(entry, session_id):
-    """True when this entry is an assistant file-edit tool call from this session. Any
-    attempt counts, even one that later failed (fails closed). Sidechain edits count too:
-    a subagent's edit changes the same files."""
+    """True when this entry is an assistant tool call from this session that changes a
+    file: an edit tool on a non-doc path, or a Bash command that writes. Any attempt
+    counts, even one that later failed (fails closed). Sidechain edits count too: a
+    subagent's edit changes the same files."""
     if not isinstance(entry, dict) or entry.get("type") != "assistant":
         return False
     if entry.get("sessionId") != session_id:
@@ -1308,8 +1350,18 @@ def _is_file_edit(entry, session_id):
     content = msg.get("content") if isinstance(msg, dict) else None
     if not isinstance(content, list):
         return False
-    return any(isinstance(b, dict) and b.get("type") == "tool_use"
-               and b.get("name") in EDIT_TOOLS for b in content)
+    for b in content:
+        if not isinstance(b, dict) or b.get("type") != "tool_use":
+            continue
+        name, inp = b.get("name"), b.get("input")
+        inp = inp if isinstance(inp, dict) else {}
+        if name in EDIT_TOOLS:
+            path = inp.get("notebook_path") if name == "NotebookEdit" else inp.get("file_path")
+            if not _is_doc_path(path):
+                return True
+        elif name in SHELL_TOOLS and _bash_edits(inp.get("command")):
+            return True
+    return False
 
 
 def has_recorded_run(transcript_path, session_id, window_min=CLAIM_CHECK_FRESH_MIN):

@@ -6,6 +6,15 @@ of the doctrine in [`docs/THE_OPERATORS_CODE.md`](docs/THE_OPERATORS_CODE.md).
 
 ## Unreleased
 
+- **Tool evidence mode: Bash file changes now cancel a test run; doc edits no longer do.**
+  After a passing run, `sed -i`, `tee`, a `>` redirect outside `/tmp`, `git checkout --`,
+  `git pull`, `git stash pop` and a script's `open(..., 'w')` now cancel the run's credit,
+  like the edit tools already did. An edit to a `.md`, `.rst` or `LICENSE` file no longer
+  forces a rerun. Not seen yet: `cp`, `mv`, `sort -o` and script files that write when run.
+  The doc-vs-code split and the Bash write list follow
+  [honestly](https://github.com/kennywu411-dev/honestly)'s findings. Tests:
+  `hooks/tests/test_edit_after_run_stale_20261107.py`.
+
 - **Tool evidence mode: a test run from before the last edit no longer counts.** With
   `CLAIM_CHECK_EVIDENCE=tool` or `both`, a passing run was credited even when the agent
   edited a file after it, then claimed "all tests pass". Now an `Edit`, `MultiEdit`,
