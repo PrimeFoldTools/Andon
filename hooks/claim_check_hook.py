@@ -82,7 +82,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import sys
+import tempfile
 import time
 import unicodedata
 from bisect import bisect_left, bisect_right
@@ -909,20 +911,31 @@ EDIT_TOOLS = ("Edit", "MultiEdit", "Write", "NotebookEdit")  # an edit after a r
 # not a doc (requirements.txt, CMakeLists.txt). Tests that read Markdown are not protected.
 _DOC_SUFFIXES = (".md", ".markdown", ".rst")
 _DOC_NAMES = frozenset(("LICENSE", "NOTICE", "AUTHORS", "COPYING"))
-# Bash commands that change files. Matched on the raw command line; quoted text is blanked
-# first for the redirect check only. Errs toward "edit" (an extra rerun, never a free pass).
-_BASH_EDIT = re.compile(
-    r"\bsed\b[^|;&\n]*\s-(?:[a-zA-Z]*i|-in-place)"
-    r"|\bperl\b[^|;&\n]*\s-[a-zA-Z]*i"
-    r"|\btee\b"
-    r"|\bgit\s+(?:checkout\b[^|;&\n]*\s--(?:\s|$)|restore\b|reset\s+--hard\b|stash\s+(?:pop|apply)\b"
-    r"|revert\b|apply\b|am\b|cherry-pick\b|merge\b|pull\b|rebase\b)"
-    r"|(?:^|[\s;&|(])patch\b"
-    r"|\b(?:write_text|write_bytes|writeFile(?:Sync)?)\s*\("
-    r"|\bopen\([^)]*['\"](?:[wax]|r\+)[bt+]*['\"]")
-_QUOTED = re.compile(r"'[^']*'|\"(?:\\.|[^\"\\])*\"")
-_REDIRECT = re.compile(r"(?:&>>?|[0-9]*>>?\|?)(?!&)\s*([^\s;&|<>()]*)")
-_SCRATCH_TARGETS = ("/dev/", "/tmp/", "/private/tmp/", "/var/folders/", "$TMPDIR", "${TMPDIR")
+# Bash and file changes. The same lesson as the verification grammar: do not try to spot
+# every way shell can write a file (quoting, `git -C`, `bash -c`, `t'e'e` all evade a
+# denylist). A Bash command counts as a file change UNLESS every segment is on this short
+# read-only list (or is a verification command) and every redirect goes to /dev/null, an
+# fd, or a real path inside a temp folder. Anything unparseable counts as a change.
+_READ_ONLY = frozenset((
+    "ls", "cat", "head", "tail", "wc", "grep", "egrep", "fgrep", "rg", "pwd", "which",
+    "type", "stat", "file", "du", "df", "date", "echo", "printf", "true", "false", "test",
+    "[", "diff", "cmp", "basename", "dirname", "realpath", "readlink", "uname", "whoami",
+    "id", "jq", "cut", "tr", "nl", "column", "cd", "set", "sleep",
+))
+# options that make an otherwise read-only command (or a verifier) write or run a program
+_WRITE_OPTS = ("--output", "--out", "--file", "--pre", "--fix", "--unsafe-fixes", "--write",
+               "--outFile", "--outDir", "--update-snapshots", "--updateSnapshot", "--exec")
+_REDIRECT_TOKENS = frozenset((">", ">>", ">|", "&>", "&>>", ">&", "<>"))
+_INPUT_TOKENS = frozenset(("<", "<&"))
+_FIND_WRITES = frozenset(("-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint",
+                          "-fprint0", "-fprintf", "-fls"))
+# git subcommands that leave the working tree's files as they are
+_GIT_READ_ONLY = frozenset(("status", "diff", "log", "show", "rev-parse", "ls-files", "ls-tree",
+                            "blame", "grep", "describe", "shortlog", "fetch", "add", "commit",
+                            "push", "remote", "tag", "branch", "reflog", "cat-file"))
+_SED_PRINT = re.compile(r"^(?:\d+|\$)(?:,(?:\d+|\$))?p$")
+_SEPARATORS = frozenset((";", "&&", "||", "|", "|&", "&"))
+_UNSAFE_RAW = ("$(", "`", "<(", ">(", "<<")
 
 # Command-line prefixes that count as verification, compared word-by-word. The first
 # word is compared by basename (".venv/bin/pytest" == "pytest") and every "pythonX.Y"
@@ -1289,8 +1302,10 @@ def _scan_entry(entry, session_id, prefixes, uses, cutoff, now_ts):
                 continue
             if inp.get("run_in_background"):
                 continue
-            if _is_verification_command(inp.get("command"), prefixes):
-                uses[bid] = inp["command"]
+            if _is_verification_command(inp.get("command"), prefixes) \
+                    and not _bash_edits(inp["command"], prefixes, cwd=entry.get("cwd"),
+                                        credit=True):
+                uses[bid] = inp["command"]  # a test line that also writes earns no credit
         elif etype == "user" and b.get("type") == "tool_result":
             tid = b.get("tool_use_id")
             if not _is_id(tid) or tid not in uses:
@@ -1317,51 +1332,178 @@ def _scan_entry(entry, session_id, prefixes, uses, cutoff, now_ts):
 def _is_doc_path(path):
     if not isinstance(path, str) or not path.strip():
         return False  # no path: cannot tell, so it counts as a code edit
-    name = path.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
-    return name.lower().endswith(_DOC_SUFFIXES) or name.upper() in _DOC_NAMES
+    def doc_name(p):
+        name = p.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+        return name.lower().endswith(_DOC_SUFFIXES) or name.upper() in _DOC_NAMES
+    try:
+        real = os.path.realpath(os.path.expanduser(path))
+    except (OSError, ValueError):
+        return False
+    return doc_name(path) and doc_name(real)  # a README.md symlinked to app.py is code
 
 
-def _bash_edits(command):
-    """True when a Bash command line changes a file: sed -i, tee, a git command that
-    rewrites the tree, a script write, or a redirect into a non-scratch path."""
+def _scratch_target(target, cwd=None):
+    """A redirect target that is not a project file: /dev/null & co, or an absolute path
+    whose real location (symlinks resolved) is inside a temp folder and not inside the
+    session's working directory."""
+    if target in ("/dev/null", "/dev/stdout", "/dev/stderr"):
+        return True
+    if not target.startswith("/") or "$" in target or ".." in target.split("/"):
+        return False
+    real = os.path.realpath(target)
+    if isinstance(cwd, str) and cwd:
+        here = os.path.realpath(cwd).rstrip("/") + "/"
+        if real.startswith(here):
+            return False  # the project itself lives in a temp folder
+    roots = {os.path.realpath(r) for r in ("/tmp", "/private/tmp", "/var/folders",
+                                           tempfile.gettempdir())}
+    return any(real.startswith(r.rstrip("/") + "/") for r in roots)
+
+
+def _writes_by_option(args):
+    return any(a.startswith(_WRITE_OPTS) for a in args)
+
+
+def _segment_read_only(words, prefixes):
+    """(read_only, is_verify) for one segment, redirects already removed."""
+    while words and _ASSIGNMENT.match(words[0]):
+        name = words[0].split("=", 1)[0]
+        if name in _DENY_ASSIGN or name.startswith(_DENY_ASSIGN_PREFIX + ("GIT_",)):
+            return False, False  # PATH=./bin cat: the command is no longer the real one
+        words = words[1:]
+    if not words:
+        return True, False
+    cmd, args = _norm_cmd_token(words[0]), words[1:]
+    if any([cmd] + args[:len(pre) - 1] == pre for pre in prefixes):
+        return not _writes_by_option(args), True  # ruff --fix, eslint --fix, tsc --outFile
+    if "/" in words[0]:
+        return False, False  # ./bin/cat: an arbitrary program with a trusted name
+    if _writes_by_option(args):
+        return False, False  # rg --pre, git diff --output=, sort --output=
+    if cmd == "git":
+        while args and args[0].startswith("-"):
+            if args[0] == "-c" or args[0].startswith("-c"):
+                return False, False  # git -c core.hooksPath=... / core.fsmonitor=...
+            if args[0] in ("-C", "--git-dir", "--work-tree", "--namespace"):
+                args = args[2:]
+            else:
+                args = args[1:]  # -C., --no-pager, --git-dir=...
+        return bool(args) and args[0] in _GIT_READ_ONLY, False
+    if cmd == "sed":
+        rest = [a for a in args[2:] if a != "--"]
+        return (len(args) >= 2 and args[0] == "-n" and bool(_SED_PRINT.match(args[1]))
+                and not any(a.startswith("-") for a in rest)), False
+    if cmd == "find":
+        return not any(a in _FIND_WRITES for a in args), False
+    if cmd == "env":
+        return not args, False  # `env CMD ...` runs CMD
+    return cmd in _READ_ONLY, False
+
+
+def _unquoted_unsafe(command):
+    """$(, backtick, <(, >(, << outside single quotes (bash expands them in double quotes)."""
+    out, q = [], None
+    for c in command:
+        if q == "'":
+            q = None if c == "'" else q
+            out.append(" ")
+            continue
+        if c == "'" and q is None:
+            q = "'"
+            out.append(" ")
+            continue
+        if c == '"':
+            q = None if q == '"' else '"'
+        out.append(c)
+    text = "".join(out)
+    return any(u in text for u in _UNSAFE_RAW)
+
+
+def _bash_edits(command, prefixes=None, cwd=None, credit=False):
+    """True when a Bash command line may change a file. Fails closed: only command lines
+    whose every segment is read-only (see _READ_ONLY) and whose redirects go nowhere in the
+    project count as not changing anything. A verification segment may save its own
+    output (`pytest -q > out.txt`); other segments may not. credit=True asks "may this
+    verification line earn credit?": a verifier that fixes files (ruff check --fix) may,
+    but any other writing segment (`pytest && sed -i ...`) still disqualifies it."""
     if not isinstance(command, str):
         return False
-    if _BASH_EDIT.search(command):
-        return True
-    for m in _REDIRECT.finditer(_QUOTED.sub("''", command)):
-        target = m.group(1)
-        if not target or target.startswith("="):
-            continue  # no file target (>&2, >(cmd)) or a comparison (>=)
-        if ".." in target or not target.startswith(_SCRATCH_TARGETS):
-            return True
+    if _unquoted_unsafe(command):
+        return True  # command substitution, process substitution, heredoc
+    if "\r" in command or any(ord(c) > 127 and unicodedata.category(c) in ("Zs", "Cc", "Cf")
+                              for c in command):
+        return True  # odd whitespace: shlex and bash may split it differently
+    prefixes = _verify_prefixes() if prefixes is None else prefixes
+    text = command.replace("\\\n", "").replace("\n", " ; ")  # bash drops backslash-newline
+    try:
+        lex = shlex.shlex(text, posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        lex.commenters = ""  # bash only starts a comment at a word start; never trust it
+        toks = list(lex)
+    except ValueError:
+        return True  # unbalanced quotes: cannot tell
+    words, targets, i = [], [], 0
+    while i <= len(toks):
+        t = toks[i] if i < len(toks) else ";"
+        if t in _SEPARATORS:
+            ro, is_verify = _segment_read_only(words, prefixes)
+            if not ro and not (credit and is_verify):
+                return True
+            if not is_verify and \
+                    not all(_scratch_target(x, cwd) for x in targets):
+                return True
+            words, targets = [], []
+        elif t in _REDIRECT_TOKENS:
+            nxt = toks[i + 1] if i + 1 < len(toks) else ""
+            if t == ">&" and (nxt.isdigit() or nxt == "-"):
+                pass  # fd duplication, not a file
+            elif not nxt or set(nxt) <= set("<>&|;()"):
+                return True
+            else:
+                targets.append(nxt)
+            i += 1
+        elif t in _INPUT_TOKENS:
+            i += 1  # reads a file
+        elif set(t) <= set("();<>|&"):
+            return True  # subshell, or a glued token like `;>` that shlex and bash split apart
+        else:
+            words.append(t)
+        i += 1
     return False
 
 
-def _is_file_edit(entry, session_id):
-    """True when this entry is an assistant tool call from this session that changes a
-    file: an edit tool on a non-doc path, or a Bash command that writes. Any attempt
-    counts, even one that later failed (fails closed). Sidechain edits count too: a
-    subagent's edit changes the same files."""
+def _file_edit_ids(entry, session_id, prefixes=None):
+    """The tool_use ids in this assistant entry, from this session, that change a file: an
+    edit tool on a non-doc path, or a Bash command that may write. Any attempt counts, even
+    one that later failed (fails closed). Sidechain edits count too: a subagent's edit
+    changes the same files. A block with no usable id is still reported (as None)."""
     if not isinstance(entry, dict) or entry.get("type") != "assistant":
-        return False
+        return []
     if entry.get("sessionId") != session_id:
-        return False
+        return []
     msg = entry.get("message")
     content = msg.get("content") if isinstance(msg, dict) else None
     if not isinstance(content, list):
-        return False
+        return []
+    out = []
     for b in content:
         if not isinstance(b, dict) or b.get("type") != "tool_use":
             continue
         name, inp = b.get("name"), b.get("input")
         inp = inp if isinstance(inp, dict) else {}
+        bid = b.get("id") if _is_id(b.get("id")) else None
         if name in EDIT_TOOLS:
             path = inp.get("notebook_path") if name == "NotebookEdit" else inp.get("file_path")
             if not _is_doc_path(path):
-                return True
-        elif name in SHELL_TOOLS and _bash_edits(inp.get("command")):
-            return True
-    return False
+                out.append(bid)
+        elif name in SHELL_TOOLS and _bash_edits(inp.get("command"), prefixes,
+                                                  cwd=entry.get("cwd")):
+            out.append(bid)
+    return out
+
+
+def _is_file_edit(entry, session_id, prefixes=None):
+    return bool(_file_edit_ids(entry, session_id, prefixes))
 
 
 def has_recorded_run(transcript_path, session_id, window_min=CLAIM_CHECK_FRESH_MIN):
@@ -1386,11 +1528,19 @@ def has_recorded_run(transcript_path, session_id, window_min=CLAIM_CHECK_FRESH_M
     for line in lines:
         try:
             entry = json.loads(line)
-            if _is_file_edit(entry, session_id):
-                credited = False  # the run predates this edit: it no longer proves anything
-                uses.clear()  # a run started before the edit cannot prove it either
+            edits = _file_edit_ids(entry, session_id, prefixes)
+            before = set(uses)
             if _scan_entry(entry, session_id, prefixes, uses, cutoff, now_ts):
                 credited = True
+            if edits:
+                credited = False  # the run predates this edit: it no longer proves anything
+                # A run started before it, or beside it in one message, cannot prove it
+                # either. Only a verifier that is itself the edit (ruff check --fix) keeps
+                # its own pending credit: its result describes the code after its fixes.
+                keep = {k for k in edits if k is not None and k in uses and k not in before}
+                for k in list(uses):
+                    if k not in keep:
+                        del uses[k]
         except Exception:  # one malformed line must not decide the gate either way
             continue
     return credited

@@ -8,6 +8,7 @@ Order is transcript order (the harness appends entries as they happen), not time
 Run:  python3 -m pytest hooks/tests/ -q
 """
 import pytest
+from pathlib import Path
 
 from test_tool_evidence import (SID, OTHER_SID, _blocked, _final, _now, _passed,
                                 _passing_run, _prompt, _run, _tool_result, _tool_use,
@@ -146,6 +147,50 @@ def test_notebook_edit_uses_notebook_path(tmp_path):
     "git apply fix.patch",
     "git reset --hard HEAD~1",
     "echo x > /tmp/../repo/app.py",
+    "git checkout main",
+    # Codex review of PR #28, verbatim
+    'printf x > /tmp/".."/repo/app.py',
+    'echo "$(printf x > app.py)"',
+    "bash -c 'printf x > app.py'",
+    "sed '-i' '' 's/a/b/' app.py",
+    "sed -e 's/a/b/;s/c/d/' -i '' app.py",
+    "perl '-pi' -e 's/a/b/' app.py",
+    "git -C . restore app.py",
+    "git reset HEAD --hard",
+    "git checkout '--' app.py",
+    "/usr/bin/patch -p1 < fix.patch",
+    "printf x | t'e'e app.py",
+    "sed \\\n  -i '' 's/a/b/' app.py",
+    "python3 -c \"open ('app.py', 'w').write('x')\"",
+    "python3 -c \"from pathlib import Path; open(Path('app.py'), 'w').write('x')\"",
+    "python3 -c \"open('app.py', 'rb+').write(b'x')\"",
+    "TMPDIR_CODE=$PWD; printf x > $TMPDIR_CODE/app.py",
+    "TMPDIR=$PWD; printf x > $TMPDIR/app.py",
+    "printf x >=app.py",
+    "printf x >&app.py",
+    "ls\nrm app.py",
+    "env rm app.py",
+    # Codex review round 2, verbatim
+    "echo x#tag > app.py",
+    "echo ok # comment\nrm app.py",
+    "echo ok;>/dev/null rm app.py",
+    'find . -ex\\\nec sh -c "printf x > app.py" {} +',
+    "sort -roapp.py data.txt",
+    "sort --out=app.py data.txt",
+    "tree -o app.py .",
+    "git diff --output=app.py",
+    "git config --file config.ini x.y changed",
+    "ruff check --fix app.py",
+    "eslint --fix app.js",
+    "tsc --outFile app.js",
+    "rg --pre ./mutator needle app.py",
+    "git -c core.fsmonitor=./mutator status",
+    "git -c core.hooksPath=./hooks commit -m wip",
+    "./bin/cat app.py",
+    "PATH=./bin cat app.py",
+    "printf x > 1",
+    "printf x > -",
+    "echo hi\r\nrm app.py",
 ])
 def test_bash_edit_after_run_stales_it(tmp_path, cmd):
     t = _write(tmp_path, [_prompt(), *_passing_run(), _bash(cmd), _final()])
@@ -156,10 +201,20 @@ def test_bash_edit_after_run_stales_it(tmp_path, cmd):
     "sed -n 1,20p app.py",
     "grep -n \"a > b\" app.py",
     "git status && git diff --stat",
-    "git checkout main",
     "ls > /dev/null 2>&1",
     "env > /tmp/env.txt",
     "cat app.py",
+    "grep -n tee app.py",
+    'ls > "/dev/null"',
+    'env > "/tmp/env.txt"',
+    "git add -A && git commit -m wip && git push",
+    "git --no-pager log --oneline -3",
+    "find . -name '*.py'",
+    "git ls-tree HEAD",
+    "git -C. status",
+    "sed -n '1,20p' -- app.py",
+    "grep -F '`' README.md",
+    "ls # just a note",
 ])
 def test_read_only_bash_after_run_does_not_stale_it(tmp_path, cmd):
     t = _write(tmp_path, [_prompt(), *_passing_run(), _bash(cmd), _final()])
@@ -177,3 +232,66 @@ def test_other_session_bash_edit_does_not_stale_the_run(tmp_path):
     e["sessionId"] = OTHER_SID
     t = _write(tmp_path, [_prompt(), *_passing_run(), e, _final()])
     assert _passed(_run(tmp_path, t))
+
+
+def test_test_line_that_also_writes_earns_no_credit(tmp_path):
+    # Codex finding 1: the write happens after the tests finish, in the same command
+    t = _write(tmp_path, [_prompt(),
+                          _tool_use("pytest && sed -i '' 's/a/b/' app.py"),
+                          _tool_result(), _final()])
+    assert _blocked(_run(tmp_path, t))
+
+
+def test_scratch_symlink_into_project_counts_as_a_write():
+    # pytest's own tmp_path is under /var/folders (scratch), so link to the real repo
+    import sys
+    import tempfile
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    import claim_check_hook as h
+    repo = Path(__file__).resolve().parent
+    link = Path(tempfile.mkdtemp()) / "src"
+    link.symlink_to(repo)
+    assert h._scratch_target(str(Path(tempfile.mkdtemp()) / "out.txt"))  # control
+    assert not h._scratch_target(f"{link}/app.py")
+    assert h._bash_edits(f"printf x > {link}/app.py")
+
+
+def test_doc_name_symlinked_to_code_stales_the_run(tmp_path):
+    code = tmp_path / "app.py"
+    code.write_text("x = 1\n")
+    readme = tmp_path / "README.md"
+    readme.symlink_to(code)
+    t = _write(tmp_path, [_prompt(), *_passing_run(), _edit_path(str(readme)), _final()])
+    assert _blocked(_run(tmp_path, t))
+
+
+@pytest.mark.parametrize("cmd", ["pytest && printf x > app.py",
+                                 "pytest && git diff --output=app.py"])
+def test_test_line_with_writing_tail_earns_no_credit(tmp_path, cmd):
+    t = _write(tmp_path, [_prompt(), _tool_use(cmd), _tool_result(), _final()])
+    assert _blocked(_run(tmp_path, t))
+
+
+def test_run_and_edit_in_one_message_earn_no_credit(tmp_path):
+    # Codex round 2: parallel tool calls in one assistant entry, the run's result after
+    both = _tool_use("python3 -m pytest hooks/tests/ -q", tid="run")
+    both["message"]["content"].append(_edit()["message"]["content"][0])
+    t = _write(tmp_path, [_prompt(), both, _tool_result(tid="run"), _final()])
+    assert _blocked(_run(tmp_path, t))
+
+
+def test_self_fixing_verifier_keeps_its_own_credit(tmp_path):
+    # ruff check --fix changes code (so it stales the earlier pytest) but its own result
+    # describes the fixed code, so it may stand as the evidence
+    t = _write(tmp_path, [_prompt(), *_passing_run(),
+                          _tool_use("ruff check --fix .", tid="toolu_fix"),
+                          _tool_result(tid="toolu_fix"), _final()])
+    assert _passed(_run(tmp_path, t))
+
+
+def test_redirect_into_project_in_a_temp_folder_counts(tmp_path):
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    import claim_check_hook as h
+    assert h._bash_edits("printf x > /tmp/proj/app.py", cwd="/tmp/proj")
+    assert not h._bash_edits("printf x > /tmp/other/out.txt", cwd="/tmp/proj")  # control
