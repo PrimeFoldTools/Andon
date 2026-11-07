@@ -6,6 +6,25 @@ of the doctrine in [`docs/THE_OPERATORS_CODE.md`](docs/THE_OPERATORS_CODE.md).
 
 ## Unreleased
 
+- **Tool evidence mode: Bash commands now cancel a test run unless they are read-only; doc
+  edits no longer do.** After a passing run, any Bash command that is not on a short
+  read-only list (`ls`, `cat`, `grep`, `sed -n Np`, `find` without `-exec`/`-delete`,
+  `git status|diff|log|show|add|commit|push|fetch`, …) cancels the run's credit, like the
+  edit tools already did. Command substitution, heredocs, subshells, unparseable quoting and
+  redirects outside `/dev/null` or a real temp folder (symlinks resolved) all count as
+  changes. A test command line that also writes in another segment
+  (`pytest && sed -i …`) earns no credit. An edit to a `.md`, `.rst` or `LICENSE` file no
+  longer forces a rerun, unless it is a symlink to a non-doc file. A first version matched
+  known write commands; a Codex review found 23 inputs that slipped past it
+  (`t'e'e`, `git -C . restore`, `bash -c`), so it now allows known reads instead. A second
+  round found 24 more (a mid-word `#` read as a comment, `;>` glued tokens, `tree -o`,
+  `git diff --output=`, `git -c core.hooksPath=`, `PATH=./bin cat`, parallel run + edit).
+  23 are fixed and tested; `pytest --junitxml=FILE` is left as is (it writes a report, not
+  code).
+  The doc-vs-code split and the Bash write list follow
+  [honestly](https://github.com/kennywu411-dev/honestly)'s findings. Tests:
+  `hooks/tests/test_edit_after_run_stale_20261107.py`.
+
 - **Tool evidence mode: a test run from before the last edit no longer counts.** With
   `CLAIM_CHECK_EVIDENCE=tool` or `both`, a passing run was credited even when the agent
   edited a file after it, then claimed "all tests pass". Now an `Edit`, `MultiEdit`,
