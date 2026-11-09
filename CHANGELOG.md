@@ -6,6 +6,8 @@ of the doctrine in [`docs/THE_OPERATORS_CODE.md`](docs/THE_OPERATORS_CODE.md).
 
 ## Unreleased
 
+## v0.1.2 — Pipe guard, tool-evidence stale-run checks (2026-11-09)
+
 - **New: pipe guard, a PreToolUse hook that stops a test run whose exit status would lie.**
   `hooks/pipe_guard_hook.py` denies a Bash command line in which a verification command
   (claim-check's list) is piped without an earlier `set -o pipefail` (`pytest | tail -3`,
