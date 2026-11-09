@@ -47,6 +47,14 @@ DENY = [
     "env -u PYTHONPATH pytest -q | tail -20",
     "true || set -o pipefail; pytest -q | tail -20",  # that set may never run
     "cat > a.md <<'EOF'\npytest | tail\nEOF\npytest -q | tail -3",  # run after the body
+    # Codex review 2, 2026-11-09
+    "set -- -o pipefail; pytest | tail",             # positional args, not an option
+    "pytest && echo passed || true",               # || later in the same && || list
+    "set -o pipefail; pytest |\n tail || true",     # newline after | continues the line
+    "set -o errexit -o nounset; pytest | tail",    # -o for other options only
+    "env -u A -C /tmp FOO=1 pytest | tail",
+    "uv run --with pytest-xdist --python 3.12 pytest -n 4 | tail",
+    "nice -n 5 timeout --signal TERM 60 pytest | tail",
 ]
 
 ALLOW = [
@@ -76,6 +84,14 @@ ALLOW = [
     "cat > a.md <<-EOF\n\tnpm test || true\n\tEOF",
     "cat <<A >x; cat <<B >y\npytest | tail\nA\nnpm test || true\nB",
     "cat <<< 'pytest | tail'",
+    # Codex review 2, 2026-11-09
+    "env echo pytest | tail",                      # echo runs, not pytest
+    "timeout 3 grep pytest README.md | head",
+    "pytest --help | head",
+    "pytest --version | head",
+    "set -o errexit -o pipefail; pytest | tail",
+    "set -o pipefail; pytest && echo ok; ls || true",  # ; ends the test's list
+    "pytest; ls || true",
 ]
 
 
@@ -149,3 +165,28 @@ def test_import_failure_in_claim_check_fails_open():
         rc, out = _run({"tool_name": "Bash", "tool_input": {"command": "pytest | tail"}},
                        CLAIM_CHECKS_LOG_PATH="~andon_nonexistent_user_20261109/log", **extra)
         assert (rc, out) == (0, ""), extra
+
+
+def test_suggested_fix_keeps_quoting():
+    # Codex review 2: `-k "not slow"` came back as `-k not slow`, a different command.
+    r = check('pytest -k "not slow" -q | tail')
+    assert "`set -o pipefail; pytest -k 'not slow' -q 2>&1 | tail -30`" in r
+    assert "~/venv/bin/pytest -q 2>&1" in check("~/venv/bin/pytest -q | tail")  # ~ unquoted
+
+
+def test_or_reason_does_not_claim_exit_zero():
+    # Codex review 2: `pytest || exit 1` exits 1, so "turns it into exit 0" was false.
+    r = check("pytest || exit 1")
+    assert "handler's" in r and "exit 0" not in r
+
+
+def test_plugin_hook_commands_allow_when_the_script_is_missing(tmp_path):
+    # Codex review 2: python3 exits 2 for a missing script, and exit 2 from a hook blocks
+    # (every Bash call, for PreToolUse). Each command checks the file first.
+    hooks = json.loads((HOOK.parent / "hooks.json").read_text())["hooks"]
+    for event, entries in hooks.items():
+        cmd = entries[0]["hooks"][0]["command"]
+        p = subprocess.run(["sh", "-c", cmd], input="{}", capture_output=True, text=True,
+                           env={**os.environ, "CLAUDE_PLUGIN_ROOT": str(tmp_path)},
+                           timeout=30)
+        assert p.returncode == 0, (event, p.returncode, p.stderr)
