@@ -92,7 +92,7 @@ In Claude Code, run:
 
 What it installs:
 
-- **Hooks, on at once:** the claim-check Stop hook in **warn** mode, the auto-orient UserPromptSubmit hook (it reads `memory/MEMORY.md` in your project, if there is one), and the pipe-guard PreToolUse hook. The pipe guard stops a test command whose exit status would lie (`pytest | tail` without `pipefail`, `npm test || true`) before it runs, and tells the agent how to rerun it. Turn it off with `ANDON_PIPE_GUARD=off`.
+- **Hooks, on at once:** the claim-check Stop hook in **warn** mode, the auto-orient UserPromptSubmit hook (it reads `memory/MEMORY.md` in your project, if there is one), and the pipe-guard PreToolUse hook (off until you turn it on). The pipe guard stops a test command whose exit status would lie (`pytest | tail` without `pipefail`, `npm test || true`) before it runs, and tells the agent how to rerun it. It is **off by default**: in one operator's history it would have refused about 1 in 23 Bash calls (all of them real piped test runs). Turn it on with `ANDON_PIPE_GUARD=on` in the environment Claude Code starts from, or in the `env` block of `settings.json`.
 - **Commands:** `/andon:wrap`, `/andon:orient`, `/andon:log-mistake`.
 - **Agents:** `andon:researcher`, `andon:auditor`, `andon:memory-steward`, `andon:builder`, `andon:chief-of-staff`.
 - **`andon-log-claim`:** a command on the agent's Bash `PATH` that runs `log_claim.py`. Tell your agent in `CLAUDE.md`: after you verify a done-claim, run `andon-log-claim "what I claim" "how I verified it"`.

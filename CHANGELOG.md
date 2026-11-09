@@ -15,8 +15,9 @@ of the doctrine in [`docs/THE_OPERATORS_CODE.md`](docs/THE_OPERATORS_CODE.md).
   `VAR=value`, `timeout`/`env`/`uv run` wrappers, `if`, `( )`, comments, line
   continuations, quoted `|`, heredoc bodies (skipped as data) and `set +o pipefail`. A Codex review of the first version found
   15 inputs it got wrong (`uv run --no-sync`, `timeout -s TERM`, a comment before the run,
-  `command -v pytest || ...`); all 15 are fixed and tested. On by default in
-  the plugin; `ANDON_PIPE_GUARD=off` disables it. Fails open on any error. Tests:
+  `command -v pytest || ...`); all 15 are fixed and tested. Off by default
+  (`ANDON_PIPE_GUARD=on` enables it): replayed over 38,970 recorded Bash calls it would
+  have refused 1,658, all real piped test runs. Fails open on any error. Tests:
   `hooks/tests/test_pipe_guard_20261109.py`.
 
 - **Tool evidence mode: Bash commands now cancel a test run unless they are read-only; doc

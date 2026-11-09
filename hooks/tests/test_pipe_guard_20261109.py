@@ -102,7 +102,7 @@ def test_custom_verify_list_is_used(monkeypatch):
 
 
 def _run(payload, **env):
-    e = {**os.environ, **env}
+    e = {**os.environ, "ANDON_PIPE_GUARD": "on", **env}
     e.pop("CLAIM_CHECK_VERIFY_COMMANDS", None)
     p = subprocess.run([sys.executable, str(HOOK)], input=json.dumps(payload),
                        capture_output=True, text=True, env=e, timeout=30)
@@ -124,8 +124,22 @@ def test_hook_silent_on_allow_other_tools_off_and_bad_input():
     assert _run({"tool_name": "Bash", "tool_input": {"command": "pytest | tail"}},
                 ANDON_PIPE_GUARD="off") == (0, "")
     p = subprocess.run([sys.executable, str(HOOK)], input="not json",
-                       capture_output=True, text=True, timeout=30)
+                       capture_output=True, text=True, timeout=30,
+                       env={**os.environ, "ANDON_PIPE_GUARD": "on"})
     assert (p.returncode, p.stdout) == (0, "")
+
+
+@pytest.mark.parametrize("value", ["", "off", "0", "no", "enabled"])
+def test_off_by_default_and_for_any_value_but_on(value):
+    payload = {"tool_name": "Bash", "tool_input": {"command": "pytest | tail"}}
+    assert _run(payload, ANDON_PIPE_GUARD=value) == (0, ""), value
+
+
+@pytest.mark.parametrize("value", ["on", "ON", "1", "true", "yes"])
+def test_on_values_enable_it(value):
+    rc, out = _run({"tool_name": "Bash", "tool_input": {"command": "pytest | tail"}},
+                   ANDON_PIPE_GUARD=value)
+    assert json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "deny", value
 
 
 def test_import_failure_in_claim_check_fails_open():

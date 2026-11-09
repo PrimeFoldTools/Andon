@@ -140,11 +140,11 @@ Tell the agent in `CLAUDE.md`: *"Run verification commands on their own line, in
 ```json
 "PreToolUse": [
   { "matcher": "Bash",
-    "hooks": [ { "type": "command", "command": "python3 /path/to/andon/hooks/pipe_guard_hook.py" } ] }
+    "hooks": [ { "type": "command", "command": "ANDON_PIPE_GUARD=on python3 /path/to/andon/hooks/pipe_guard_hook.py" } ] }
 ]
 ```
 
-Set `ANDON_PIPE_GUARD=off` to disable it.
+It is off unless `ANDON_PIPE_GUARD=on`. Replayed over 38,970 recorded Bash calls from one operator's sessions, it would have refused 1,658 (about 1 in 23). All 1,658 were real test runs piped without `pipefail`, mostly into `tail` or `grep`, and 52 of them printed `$?` as if it were the test's status.
 
 How often honest habits miss: across one operator's 1,137 Claude Code session transcripts (top-level `~/.claude/projects/*/*.jsonl`, entries dated 2026-06-27 to 2026-10-16), 1,303 main-thread `Bash` calls mentioned an allowlisted verification command; the grammar credits 8 of them. Of the rest, by first matching reason: 751 were multi-line, 321 piped without `pipefail`, 189 used `$`, backticks, `#`, parentheses, braces, `<`, `\` or `!`, 23 used `||`, and 11 put the command in a position or form the grammar does not accept (`npx tsc` most often). Counted by running the hook's own `_is_verification_command` over every such call; a "mention" includes calls that only wrote or grepped test files, so the count overstates real runs. Expect warnings until the habit changes.
 

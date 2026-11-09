@@ -22,7 +22,7 @@ or an alias, or a test run inside a heredoc fed to a shell (`bash <<EOF`): hered
 are skipped as data. A deny costs one rerun.
 
 Config:
-  ANDON_PIPE_GUARD=off      disable (default: on)
+  ANDON_PIPE_GUARD=on       enable (default: off; any other value leaves it off)
   CLAIM_CHECK_VERIFY_COMMANDS="pytest,make test"   overrides the command list
 
 Input: the PreToolUse JSON on stdin. Output: a deny decision on stdout, or nothing.
@@ -230,8 +230,8 @@ def check(command, prefixes=None):
 
 
 def main():
-    if os.environ.get("ANDON_PIPE_GUARD", "").strip().lower() in ("off", "0", "false", "no"):
-        return 0
+    if os.environ.get("ANDON_PIPE_GUARD", "").strip().lower() not in ("on", "1", "true", "yes"):
+        return 0  # off by default: it denies often (1 in 23 Bash calls in one operator's history)
     try:  # claim_check_hook is imported inside check(), so its import errors land here
         data = json.load(sys.stdin)
         if data.get("tool_name") != "Bash":
