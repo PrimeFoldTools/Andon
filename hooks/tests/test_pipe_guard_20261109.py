@@ -46,6 +46,7 @@ DENY = [
     "timeout -s TERM 300 pytest -q | tail -20",
     "env -u PYTHONPATH pytest -q | tail -20",
     "true || set -o pipefail; pytest -q | tail -20",  # that set may never run
+    "cat > a.md <<'EOF'\npytest | tail\nEOF\npytest -q | tail -3",  # run after the body
 ]
 
 ALLOW = [
@@ -69,6 +70,12 @@ ALLOW = [
     "pytest -q # run tests\nls | head",             # the comment ends at the newline
     'pytest --junit-prefix "|"',                   # a quoted | is not a pipe
     "pytest -q 2>&1 >out.txt",
+    # heredoc bodies are data (PR bodies, commit messages, docs written by the agent)
+    "gh pr create --title x --body-file - <<'EOF'\nRepro:\npytest -q | tail -3\nEOF",
+    "cat > README.md <<'EOF'\nRun the tests:\n    pytest -q | tail\nEOF",
+    "cat > a.md <<-EOF\n\tnpm test || true\n\tEOF",
+    "cat <<A >x; cat <<B >y\npytest | tail\nA\nnpm test || true\nB",
+    "cat <<< 'pytest | tail'",
 ]
 
 

@@ -18,8 +18,8 @@ Everything else is allowed, including `set -o pipefail; pytest | tail -3`, a bar
 Stop hook still withholds credit from them.
 
 What it does NOT see: a verification inside `bash -c "..."`, a script, a Makefile target
-or an alias. A heredoc body is read as commands, so a body line like `pytest | tail` can
-deny a line that never runs it. A deny costs one rerun.
+or an alias, or a test run inside a heredoc fed to a shell (`bash <<EOF`): heredoc bodies
+are skipped as data. A deny costs one rerun.
 
 Config:
   ANDON_PIPE_GUARD=off      disable (default: on)
@@ -38,7 +38,7 @@ from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-_OPS = ("||", "|&", "&&", ";;", ">>", ">&", "&>", "<<", ">|", "<&",
+_OPS = ("<<<", "<<-", "||", "|&", "&&", ";;", ">>", ">&", "&>", "<<", ">|", "<&",
         "|", "&", ";", "\n", "(", ")", "<", ">")
 _LIST_OPS = ("||", "&&", ";;", "&", ";", "\n")
 _PIPE_OPS = ("|", "|&")
@@ -57,14 +57,19 @@ _WRAP_SCAN = 8
 def _tokens(s):
     """Split a command line into [("w", word) | ("op", op)], the way bash reads it for
     this purpose: quotes make one word (so a quoted `|` is not a pipe), a `#` at the start
-    of a word comments to end of line (the newline stays), backslash-newline joins lines.
+    of a word comments to end of line (the newline stays), backslash-newline joins lines,
+    and a heredoc body (`<<EOF` ... `EOF`) is skipped: it is data, not commands.
     Raises ValueError on an unclosed quote."""
     out, cur, have, i, n = [], [], False, 0, len(s)
+    want_delim, heredocs = None, []  # (delimiter, strip leading tabs) for each pending body
 
     def flush():
-        nonlocal cur, have
+        nonlocal cur, have, want_delim
         if have:
             out.append(("w", "".join(cur)))
+            if want_delim is not None:
+                heredocs.append(("".join(cur), want_delim))
+                want_delim = None
         cur, have = [], False
 
     while i < n:
@@ -103,6 +108,17 @@ def _tokens(s):
             op = next(o for o in _OPS if s.startswith(o, i))
             out.append(("op", op))
             i += len(op)
+            if op in ("<<", "<<-"):
+                want_delim = op == "<<-"
+            elif op == "\n" and heredocs:
+                for delim, strip in heredocs:  # skip each body up to its delimiter line
+                    while i < n:
+                        j = s.find("\n", i)
+                        line = s[i:] if j < 0 else s[i:j]
+                        i = n if j < 0 else j + 1
+                        if (line.lstrip("\t") if strip else line) == delim:
+                            break
+                heredocs.clear()
         else:
             cur.append(c)
             have, i = True, i + 1

@@ -13,7 +13,7 @@ of the doctrine in [`docs/THE_OPERATORS_CODE.md`](docs/THE_OPERATORS_CODE.md).
   gives the fix. The claim check already refused to credit these runs, but only at turn end,
   after the agent had read the wrong status. Handles multi-line commands, `cd x &&`,
   `VAR=value`, `timeout`/`env`/`uv run` wrappers, `if`, `( )`, comments, line
-  continuations, quoted `|` and `set +o pipefail`. A Codex review of the first version found
+  continuations, quoted `|`, heredoc bodies (skipped as data) and `set +o pipefail`. A Codex review of the first version found
   15 inputs it got wrong (`uv run --no-sync`, `timeout -s TERM`, a comment before the run,
   `command -v pytest || ...`); all 15 are fixed and tested. On by default in
   the plugin; `ANDON_PIPE_GUARD=off` disables it. Fails open on any error. Tests:

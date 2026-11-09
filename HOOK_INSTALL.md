@@ -135,7 +135,7 @@ Not counted:
 
 Tell the agent in `CLAUDE.md`: *"Run verification commands on their own line, in the foreground, unpiped or after `set -o pipefail;`, so the harness records their real exit status."*
 
-**Pipe guard (catches the commonest miss before it runs).** `hooks/pipe_guard_hook.py` is a PreToolUse hook on `Bash`. It denies a command line in which a verification command (the list above, or `CLAIM_CHECK_VERIFY_COMMANDS`) is piped into anything without an earlier `set -o pipefail`, or is followed by `||`. The deny reason names the fix, so the agent reruns the line in a form this grammar credits. It allows a bare run, `set -o pipefail; pytest -q | tail -3`, `pytest > out.txt` and `pytest; echo $?`, and any line it cannot tokenize. It reads only the command line: `bash -c "..."`, scripts, Makefile targets and aliases get past it. The plugin installs it; for a manual install add:
+**Pipe guard (catches the commonest miss before it runs).** `hooks/pipe_guard_hook.py` is a PreToolUse hook on `Bash`. It denies a command line in which a verification command (the list above, or `CLAIM_CHECK_VERIFY_COMMANDS`) is piped into anything without an earlier `set -o pipefail`, or is followed by `||`. The deny reason names the fix, so the agent reruns the line in a form this grammar credits. It allows a bare run, `set -o pipefail; pytest -q | tail -3`, `pytest > out.txt` and `pytest; echo $?`, and any line it cannot tokenize. It reads only the command line: `bash -c "..."`, scripts, Makefile targets and aliases get past it. Heredoc bodies are skipped as data, so a PR description or README the agent writes through `<<EOF` is never refused. The plugin installs it; for a manual install add:
 
 ```json
 "PreToolUse": [
