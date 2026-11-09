@@ -13,10 +13,10 @@ Then add the operator's durable facts (stack, hard rules, decisions + why) as on
 
 **2. Instructions (Layer 2).** Copy `templates/CLAUDE.md.template` → the project's `CLAUDE.md` (or `~/.claude/CLAUDE.md` for global). Fill the Operator profile + Operating Rules; keep the Mistakes Log section. Add this line: *"Read `memory/MEMORY.md` at the start of every session."*
 
-**3. Hooks (Layer 3) — ask first; default to WARN mode.** Copy the three scripts to `~/.claude/hooks/`:
+**3. Hooks (Layer 3) — ask first; default to WARN mode.** Copy the four scripts to `~/.claude/hooks/`:
 ```bash
 mkdir -p ~/.claude/hooks
-cp hooks/claim_check_hook.py hooks/log_claim.py hooks/auto_orient.py ~/.claude/hooks/
+cp hooks/claim_check_hook.py hooks/log_claim.py hooks/auto_orient.py hooks/pipe_guard_hook.py ~/.claude/hooks/
 ```
 Register **both** hooks in `~/.claude/settings.json` using the combined block in `HOOK_INSTALL.md` (section "Both hooks in one settings.json"). **MERGE** into any existing `"hooks"` object — never replace it. Then validate: `python3 -c "import json; json.load(open('$HOME/.claude/settings.json'))"`. Add to `CLAUDE.md`: *"After verifying a done-claim, run `python3 ~/.claude/hooks/log_claim.py \"<claim>\" \"<how verified>\"`."*
 

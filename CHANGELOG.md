@@ -6,6 +6,26 @@ of the doctrine in [`docs/THE_OPERATORS_CODE.md`](docs/THE_OPERATORS_CODE.md).
 
 ## Unreleased
 
+- **New: pipe guard, a PreToolUse hook that stops a test run whose exit status would lie.**
+  `hooks/pipe_guard_hook.py` denies a Bash command line in which a verification command
+  (claim-check's list) is piped without an earlier `set -o pipefail` (`pytest | tail -3`,
+  `npm test 2>&1 | grep -c ok`), or followed by `||` in the same `&&`/`||` list
+  (`pytest || true`, `pytest && echo ok || true`). The deny reason gives the fix. The claim check already refused to credit these runs, but only at turn end,
+  after the agent had read the wrong status. Handles multi-line commands, `cd x &&`,
+  `VAR=value`, `timeout`/`env`/`uv run` wrappers, `if`, `( )`, comments, line
+  continuations, quoted `|`, heredoc bodies (skipped as data) and `set +o pipefail`. A Codex review of the first version found
+  15 inputs it got wrong (`uv run --no-sync`, `timeout -s TERM`, a comment before the run,
+  `command -v pytest || ...`); all 15 are fixed and tested. A second Codex review found
+  14 more; fixed: a missing script blocking every Bash call (python3 exits 2; all three
+  plugin hook commands now check the file first), the suggested fix dropping quotes
+  (`-k "not slow"`), wrapper arguments read as the command (`env echo pytest`),
+  `pytest --help | head` refused, `set -- -o pipefail` read as pipefail, `&& ... || true`
+  and a newline after `|` missed. The rest are listed limits. Off by default
+  (`ANDON_PIPE_GUARD=on` enables it): replayed over 39,038 of the author's recorded Bash
+  calls it would have refused 1,658, each a test run with a hidden status. Fails open on
+  any error. Tests:
+  `hooks/tests/test_pipe_guard_20261109.py`.
+
 - **Tool evidence mode: Bash commands now cancel a test run unless they are read-only; doc
   edits no longer do.** After a passing run, any Bash command that is not on a short
   read-only list (`ls`, `cat`, `grep`, `sed -n Np`, `find` without `-exec`/`-delete`,
