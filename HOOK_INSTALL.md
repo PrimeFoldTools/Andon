@@ -135,6 +135,17 @@ Not counted:
 
 Tell the agent in `CLAUDE.md`: *"Run verification commands on their own line, in the foreground, unpiped or after `set -o pipefail;`, so the harness records their real exit status."*
 
+**Pipe guard (catches the commonest miss before it runs).** `hooks/pipe_guard_hook.py` is a PreToolUse hook on `Bash`. It denies a command line in which a verification command (the list above, or `CLAIM_CHECK_VERIFY_COMMANDS`) is piped into anything without an earlier `set -o pipefail`, or is followed by `||`. The deny reason names the fix, so the agent reruns the line in a form this grammar credits. It allows a bare run, `set -o pipefail; pytest -q | tail -3`, `pytest > out.txt` and `pytest; echo $?`, and any line it cannot tokenize. It reads only the command line: `bash -c "..."`, scripts, Makefile targets and aliases get past it. The plugin installs it; for a manual install add:
+
+```json
+"PreToolUse": [
+  { "matcher": "Bash",
+    "hooks": [ { "type": "command", "command": "python3 /path/to/andon/hooks/pipe_guard_hook.py" } ] }
+]
+```
+
+Set `ANDON_PIPE_GUARD=off` to disable it.
+
 How often honest habits miss: across one operator's 1,137 Claude Code session transcripts (top-level `~/.claude/projects/*/*.jsonl`, entries dated 2026-06-27 to 2026-10-16), 1,303 main-thread `Bash` calls mentioned an allowlisted verification command; the grammar credits 8 of them. Of the rest, by first matching reason: 751 were multi-line, 321 piped without `pipefail`, 189 used `$`, backticks, `#`, parentheses, braces, `<`, `\` or `!`, 23 used `||`, and 11 put the command in a position or form the grammar does not accept (`npx tsc` most often). Counted by running the hook's own `_is_verification_command` over every such call; a "mention" includes calls that only wrote or grepped test files, so the count overstates real runs. Expect warnings until the habit changes.
 
 A listed command that runs **zero** tests can still exit 0 and be credited: `python -m unittest` before Python 3.12 ("Ran 0 tests … OK"), and filters that match nothing (`cargo test nomatch`, `go test -run NONE`, `ctest -R nomatch`, `ruff check --ignore ALL`). pytest itself exits 5 when nothing is collected.
@@ -158,7 +169,7 @@ In `tool` / `both` mode the transcript is still read for the recorded verificati
 - Regex detection is **intentionally conservative**; some real done-claims won't trigger until you tune `COMPLETION_VERBS` to your writing style (see *Tuning false-fires* below).
 - The hook is only as good as the **`log_claim.py` discipline** around it — no log entry, no signal.
 - **Start in warn mode.** Promote to block only after it behaves well on your work.
-- It is a **Stop hook, not a PreToolUse hook** — it checks at turn-end, not before a tool call.
+- It is a **Stop hook, not a PreToolUse hook** — it checks at turn-end, not before a tool call. The pipe guard (§6, above) covers one case before the call.
 
 ## The second hook: auto-orient (loads memory at session start)
 
