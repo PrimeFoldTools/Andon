@@ -1,7 +1,7 @@
 {
   "name": "andon",
   "displayName": "Andon",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Pull the cord on a false \"done\": a claim-check Stop hook, an auto-orient memory hook, wrap/orient/log-mistake commands, and a starter agent team.",
   "author": {
     "name": "PrimeFoldTools",
