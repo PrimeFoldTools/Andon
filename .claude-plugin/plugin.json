@@ -8,6 +8,7 @@
     "url": "https://github.com/PrimeFoldTools"
   },
   "homepage": "https://github.com/PrimeFoldTools/andon",
+  "documentationUrl": "https://github.com/PrimeFoldTools/Andon/blob/main/QUICKSTART.md",
   "repository": "https://github.com/PrimeFoldTools/andon",
   "license": "MIT",
   "keywords": ["hooks", "verification", "claim-check", "memory", "stop-hook"],
