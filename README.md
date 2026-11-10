@@ -27,6 +27,8 @@ Most "AI tips" make the *output* a little better. Recurring defects also need ex
 
 The aim: **retain what you learned and check whether the countermeasure works.**
 
+**This is not a memory tool.** Memory remembers the lesson. A countermeasure makes the mistake harder to repeat. ([Why that matters →](#why-this-and-not-the-20-other-memory-repos))
+
 ---
 
 ## Quickstart — your first win in 5 minutes (no code)
